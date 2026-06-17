@@ -1,0 +1,8 @@
+/bin/
+/lib/
+/.shards/
+/docs/
+*.dwarf
+*.o
+*.tmp
+*.fqix
