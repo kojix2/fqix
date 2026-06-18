@@ -93,6 +93,41 @@ module SpecIndexSupport
     end
   end
 
+  def write_exact_index_with_entry_flags(path : String, flags : UInt32)
+    entries_offset = Fqix::IndexFormat::V2_HEADER_SIZE
+    name_table_offset = entries_offset + Fqix::IndexFormat::ENTRY_SIZE
+    windows_offset = name_table_offset
+    File.open(path, "wb") do |io|
+      io.write(Fqix::IndexFormat::MAGIC.to_slice)
+      Fqix::IndexFormat.write_version(io, Fqix::IndexFormat::EXACT_VERSION)
+      Fqix::BinaryIO.write_u16(io, 0_u16)
+      Fqix::BinaryIO.write_u16(io, 0_u16)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_i64(io, 0_i64)
+      Fqix::BinaryIO.write_u64(io, 1_u64)
+      Fqix::BinaryIO.write_u8(io, Fqix::HashAlgorithm::Fnv1a64.value)
+      Fqix::BinaryIO.write_u8(io, Fqix::NameMode::FirstToken.value)
+      Fqix::BinaryIO.write_u8(io, 1_u8)
+      Fqix::BinaryIO.write_u8(io, 0_u8)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u64(io, 1_u64)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u64(io, 1_u64)
+      Fqix::BinaryIO.write_u32(io, 0_u32)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u64(io, entries_offset)
+      Fqix::BinaryIO.write_u64(io, name_table_offset)
+      Fqix::BinaryIO.write_u64(io, windows_offset)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u32(io, 0_u32)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u32(io, flags)
+    end
+  end
+
   def write_sparse_v1_index(path : String,
                             source_path : String,
                             checkpoint_metas : Array(Fqix::CheckpointMeta),
@@ -299,6 +334,20 @@ describe Fqix::Index do
         SpecIndexSupport.write_sparse_v1_index(index_path, "reads.fastq.gz", checkpoints, names, [Bytes.new(Fqix::Zran::WINDOW_SIZE)])
 
         expect_raises(Fqix::Error, "invalid fqix sparse name checkpoint reference") do
+          Fqix::Index.read(index_path)
+        end
+      ensure
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
+    it "rejects exact entries with reserved flags" do
+      index_path = File.tempname("fqix-bad-entry-flags-spec", ".fqix")
+
+      begin
+        SpecIndexSupport.write_exact_index_with_entry_flags(index_path, 1_u32)
+
+        expect_raises(Fqix::Error, "unsupported fqix entry flags") do
           Fqix::Index.read(index_path)
         end
       ensure

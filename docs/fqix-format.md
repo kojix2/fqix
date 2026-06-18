@@ -129,7 +129,7 @@ Each entry is 48 bytes and entries are sorted by `(name_hash, record_number)`.
 | 20 | 8 | u64 | record_number | FASTQ appearance order |
 | 28 | 8 | u64 | record_offset | Uncompressed FASTQ record start |
 | 36 | 8 | u64 | record_size | FASTQ record byte size |
-| 44 | 4 | u32 | flags | Reserved |
+| 44 | 4 | u32 | flags | Reserved, must be `0` |
 
 Lookup binary-searches the hash range and verifies candidate names with an exact name-table byte comparison. The hash is only an accelerator; collisions are safe.
 

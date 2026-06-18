@@ -512,6 +512,7 @@ module Fqix
       record_offset = BinaryIO.read_u64(io)
       record_size = BinaryIO.read_u64(io)
       flags = BinaryIO.read_u32(io)
+      raise Error.new("unsupported fqix entry flags") unless flags == 0
       Entry.new(name_hash, name_offset, name_length, record_number, record_offset, record_size, flags)
     end
   end
