@@ -1,147 +1,199 @@
 # fqix
 
-`fqix` is an experimental FASTQ read-name index for ordinary `.fastq.gz` files.
+[![CI](https://github.com/kojix2/fqix/actions/workflows/ci.yml/badge.svg)](https://github.com/kojix2/fqix/actions/workflows/ci.yml)
+[![build](https://github.com/kojix2/fqix/actions/workflows/build.yml/badge.svg)](https://github.com/kojix2/fqix/actions/workflows/build.yml)
 
-It is intended for name-sorted FASTQ files. It does not require re-compressing
-with bgzip.
+fqix is a small command-line tool for fetching FASTQ records by read name from ordinary `fastq.gz` files.
+It builds a `.fqix` index so lookup can resume gzip inflation near the requested read instead of scanning from the beginning.
 
-The index combines two tables in one `.fqix` file:
+Note: `fqix` currently expects FASTQ files sorted by read name. It does not work with randomly ordered FASTQ files.
 
-- zran-style gzip restart checkpoints
-- a sparse read-name index
+## Installation
 
-Lookup uses the sparse read-name index to find a nearby read, then resumes gzip
-inflation from the nearest checkpoint and scans forward until the requested read
-is found.
+Prebuilt binaries are available from [GitHub Releases](https://github.com/kojix2/fqix/releases).
 
-## Status
-
-This is a minimal prototype.
-
-Known limitations:
-
-- FASTQ must be sorted by read name.
-- FASTQ records must use the standard four-line layout; wrapped multiline
-  sequence or quality fields are not supported.
-- The index is sparse, not exact.
-- Some gzip files may have sparse deflate block boundaries, so zran checkpoints
-  may be farther apart than requested.
-- `fqix check` compares the source file size and second-resolution modification
-  time. Rewrites that keep the same size within the same second may not be
-  reported as stale.
-- Parallel lookup is not implemented yet.
-- The low-level zran code uses zlib through Crystal's C bindings.
-
-## Build
-
-Requirements:
-
-- Crystal
-- zlib development headers
-
-Tests also link Mark Adler's zran example as a reference implementation, so a C
-compiler is required for `make test`.
+To build from source:
 
 ```sh
-make
+git clone https://github.com/kojix2/fqix.git
+cd fqix
+make release=1
 ```
 
-The binary is:
+The binary is written to:
 
 ```sh
 bin/fqix
 ```
 
-## Usage
+## Quick Start
 
-Create an index:
+Given `reads.fastq.gz`:
+
+1. Build an index
 
 ```sh
 fqix index reads.fastq.gz
 ```
 
-This writes:
+This creates:
 
-```sh
+```text
 reads.fastq.gz.fqix
 ```
 
-Fetch one or more reads:
+2. Fetch by read name
 
 ```sh
-fqix get reads.fastq.gz read_001 read_002
+fqix get reads.fastq.gz read_001
+```
+
+You can request multiple reads at once:
+
+```sh
+fqix get reads.fastq.gz read_001 read_002 read_003
+```
+
+Matching FASTQ records are written to stdout:
+
+```sh
+fqix get reads.fastq.gz read_001 read_002 > hits.fastq
+```
+
+## Commands
+
+### `fqix index`
+
+Build a `.fqix` index from a `.fastq.gz` file.
+
+```sh
+fqix index reads.fastq.gz
+```
+
+Specify an output path:
+
+```sh
+fqix index -o reads.fqix reads.fastq.gz
+```
+
+### `fqix get`
+
+Fetch FASTQ records by read name.
+
+```sh
+fqix get reads.fastq.gz read_001
 ```
 
 Use an explicit index path:
 
 ```sh
-fqix index -o reads.fqix reads.fastq.gz
 fqix get -i reads.fqix reads.fastq.gz read_001
 ```
 
-Show index metadata:
+If any read is missing, a message is written to stderr and the exit code is `2`.
+
+### `fqix show`
+
+Show index metadata.
 
 ```sh
 fqix show reads.fastq.gz.fqix
 ```
 
-Check whether the index matches the gzip file size and modification time:
+Print stored read-name anchors:
+
+```sh
+fqix show --raw reads.fastq.gz.fqix
+```
+
+### `fqix check`
+
+Check whether an index still matches its source `.fastq.gz`.
 
 ```sh
 fqix check reads.fastq.gz
 ```
 
-Print version:
+Example output:
 
-```sh
-fqix --version
+```text
+ok	reads.fastq.gz.fqix
 ```
 
-## Options
+If the source file has changed:
+
+```text
+stale	reads.fastq.gz.fqix
+```
+
+## Common Options
+
+Tune index density:
 
 ```sh
 fqix index --checkpoint-span 4194304 --name-interval 1024 reads.fastq.gz
+```
+
+- `--checkpoint-span`: target spacing between gzip restart points, in uncompressed bytes.
+- `--name-interval`: number of FASTQ records between stored read-name anchors.
+
+Increase the forward scan limit during lookup:
+
+```sh
 fqix get --scan-bytes 16777216 reads.fastq.gz read_001
 ```
 
-`--checkpoint-span` controls the target distance between gzip restart points in
-uncompressed bytes. Actual distances depend on deflate block boundaries.
+If lookup reports `scan limit reached`, increasing `--scan-bytes` may help.
 
-`--name-interval` controls how many FASTQ records are skipped between sparse
-read-name anchors.
+## FASTQ Assumptions
 
-`--scan-bytes` controls how much data is inflated after a sparse anchor during
-lookup.
+`fqix` currently expects:
 
-## Design
+- `.fastq.gz` input
+- records sorted by read name
+- four-line FASTQ records
+- no wrapped multiline sequence or quality fields
 
-The `.fqix` file contains:
-
-```text
-header
-checkpoint table
-name table
-```
-
-A name entry stores:
+Example:
 
 ```text
-read name
-uncompressed offset
-checkpoint id
-delta from checkpoint
+@read_001 optional comment
+ACGTACGT
++
+IIIIIIII
 ```
 
-This keeps the gzip restart index and read-name index as separate tables, while
-still linking them directly for fast lookup.
+The read name is parsed from after `@` up to the first space or tab. In this example, it is `read_001`.
+
+## How It Works
+
+A `.fqix` index stores:
+
+- [zran](https://github.com/madler/zlib/blob/develop/examples/zran.h)-style checkpoints for resuming gzip inflation
+- a sparse read-name index
+
+`fqix get` finds a nearby read-name anchor, resumes from the nearest gzip checkpoint, then scans forward to the requested read.
+
+## Limitations
+
+- Multiline FASTQ is not supported.
+- `fqix check` compares source file size and second-resolution mtime.
+- Parallel lookup is not implemented.
+
+## Development
+
+Run tests:
+
+```sh
+make test
+```
+
+Tests link Mark Adler's zran example as a reference implementation, so a C compiler is required.
 
 ## License
 
-The overall fqix project is licensed under the MIT License.
+fqix is licensed under the MIT License.
 
-The zran-related implementation in `src/fqix/zran.cr` is distributed under the
-zlib License. It implements zran-derived checkpointing and extraction based on
-Mark Adler's zran example from zlib.
+The zran-related implementation in `src/fqix/zran.cr` is distributed under the [zlib License](https://github.com/madler/zlib/blob/develop/LICENSE). It is based on Mark Adler's [zran example](https://github.com/madler/zlib/tree/develop/examples) from [zlib](https://github.com/madler/zlib).
 
-The reference zran files under `spec/support/` are Mark Adler's zran example
-and remain under the zlib License.
+The reference zran files under `spec/support/` are Mark Adler's [zran example](https://github.com/madler/zlib/tree/develop/examples) and remain under the [zlib License](https://github.com/madler/zlib/blob/develop/LICENSE).
