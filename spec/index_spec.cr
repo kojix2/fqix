@@ -59,6 +59,40 @@ module SpecIndexSupport
     end
   end
 
+  def write_exact_index_with_checkpoint_meta(path : String,
+                                             bits : UInt8 = 0_u8,
+                                             have : UInt32 = 0_u32,
+                                             window_bytes : Int32 = Fqix::Zran::WINDOW_SIZE)
+    windows_offset = Fqix::IndexFormat::V2_HEADER_SIZE + Fqix::IndexFormat::CHECKPOINT_META_SIZE
+    File.open(path, "wb") do |io|
+      io.write(Fqix::IndexFormat::MAGIC.to_slice)
+      Fqix::IndexFormat.write_version(io, Fqix::IndexFormat::EXACT_VERSION)
+      Fqix::BinaryIO.write_u16(io, 0_u16)
+      Fqix::BinaryIO.write_u16(io, 0_u16)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_i64(io, 0_i64)
+      Fqix::BinaryIO.write_u64(io, 1_u64)
+      Fqix::BinaryIO.write_u8(io, Fqix::HashAlgorithm::Fnv1a64.value)
+      Fqix::BinaryIO.write_u8(io, Fqix::NameMode::FirstToken.value)
+      Fqix::BinaryIO.write_u8(io, 1_u8)
+      Fqix::BinaryIO.write_u8(io, 0_u8)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u64(io, 1_u64)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u32(io, 0_u32)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u64(io, Fqix::IndexFormat::V2_HEADER_SIZE)
+      Fqix::BinaryIO.write_u64(io, Fqix::IndexFormat::V2_HEADER_SIZE)
+      Fqix::BinaryIO.write_u64(io, windows_offset)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_u8(io, bits)
+      Fqix::BinaryIO.write_u32(io, have)
+      io.write(Bytes.new(window_bytes))
+    end
+  end
+
   def write_sparse_v1_index(path : String,
                             source_path : String,
                             checkpoint_metas : Array(Fqix::CheckpointMeta),
@@ -175,6 +209,48 @@ describe Fqix::Index do
         SpecIndexSupport.write_index_header(index_path, ncheckpoints: UInt64::MAX)
 
         expect_raises(Fqix::Error, "invalid fqix index checkpoint count") do
+          Fqix::Index.read(index_path)
+        end
+      ensure
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
+    it "rejects checkpoint metadata with invalid bit count" do
+      index_path = File.tempname("fqix-bad-checkpoint-bits-spec", ".fqix")
+
+      begin
+        SpecIndexSupport.write_exact_index_with_checkpoint_meta(index_path, bits: 8_u8)
+
+        expect_raises(Fqix::Error, "invalid fqix checkpoint bits") do
+          Fqix::Index.read(index_path)
+        end
+      ensure
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
+    it "rejects checkpoint metadata with an oversized dictionary" do
+      index_path = File.tempname("fqix-bad-checkpoint-have-spec", ".fqix")
+
+      begin
+        SpecIndexSupport.write_exact_index_with_checkpoint_meta(index_path, have: (Fqix::Zran::WINDOW_SIZE + 1).to_u32)
+
+        expect_raises(Fqix::Error, "invalid fqix checkpoint dictionary size") do
+          Fqix::Index.read(index_path)
+        end
+      ensure
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
+    it "rejects an index whose checkpoint windows are truncated" do
+      index_path = File.tempname("fqix-short-windows-spec", ".fqix")
+
+      begin
+        SpecIndexSupport.write_exact_index_with_checkpoint_meta(index_path, window_bytes: Fqix::Zran::WINDOW_SIZE - 1)
+
+        expect_raises(Fqix::Error, "invalid fqix index window section") do
           Fqix::Index.read(index_path)
         end
       ensure

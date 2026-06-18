@@ -241,6 +241,7 @@ module Fqix
       if io.pos.to_u64 != windows_offset
         raise Error.new("invalid fqix index window offset")
       end
+      ensure_windows_fit!(ncheckpoints, windows_offset, file_size)
 
       Index.new(
         source_path,
@@ -325,6 +326,7 @@ module Fqix
       if io.pos.to_u64 != windows_offset
         raise Error.new("invalid fqix index window offset")
       end
+      ensure_windows_fit!(ncheckpoints, windows_offset, file_size)
 
       Index.new(
         source_path,
@@ -402,6 +404,14 @@ module Fqix
       end
     end
 
+    private def ensure_windows_fit!(ncheckpoints : UInt64, windows_offset : UInt64, file_size : UInt64) : Nil
+      bytes_available = file_size - windows_offset
+      window_size = Zran::WINDOW_SIZE.to_u64
+      if ncheckpoints > MAX_ARRAY_SIZE || ncheckpoints > bytes_available // window_size
+        raise Error.new("invalid fqix index window section")
+      end
+    end
+
     private def parse_hash_algorithm(value : UInt8) : HashAlgorithm
       HashAlgorithm.from_value(value)
     rescue
@@ -432,6 +442,8 @@ module Fqix
       in_offset = BinaryIO.read_u64(io)
       bits = BinaryIO.read_u8(io)
       have = BinaryIO.read_u32(io)
+      raise Error.new("invalid fqix checkpoint bits") if bits > 7
+      raise Error.new("invalid fqix checkpoint dictionary size") if have > Zran::WINDOW_SIZE
       CheckpointMeta.new(out_offset, in_offset, bits, have)
     end
 
