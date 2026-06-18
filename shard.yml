@@ -1,6 +1,8 @@
 name: fqix
 version: 0.0.3
 
+description: Fetch FASTQ records by read name
+
 authors:
   - kojix2 <2xijok@gmail.com>
 
