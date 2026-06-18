@@ -21,6 +21,29 @@ module SpecIndexSupport
       Fqix::BinaryIO.write_u32(io, version)
     end
   end
+
+  def write_index_header(path : String,
+                         source_path_len : UInt32 = 0_u32,
+                         ncheckpoints : UInt64 = 0_u64,
+                         nnames : UInt64 = 0_u64,
+                         windows_offset : UInt64 = Fqix::IndexFormat::V3_HEADER_SIZE,
+                         flags : UInt16 = 0_u16,
+                         padding : UInt16 = 0_u16)
+    File.open(path, "wb") do |io|
+      io.write(Fqix::IndexFormat::MAGIC.to_slice)
+      Fqix::BinaryIO.write_u32(io, Fqix::IndexFormat::VERSION)
+      Fqix::BinaryIO.write_u16(io, flags)
+      Fqix::BinaryIO.write_u16(io, padding)
+      Fqix::BinaryIO.write_u64(io, 0_u64)
+      Fqix::BinaryIO.write_i64(io, 0_i64)
+      Fqix::BinaryIO.write_u64(io, 1_u64)
+      Fqix::BinaryIO.write_u32(io, 1_u32)
+      Fqix::BinaryIO.write_u32(io, source_path_len)
+      Fqix::BinaryIO.write_u64(io, ncheckpoints)
+      Fqix::BinaryIO.write_u64(io, nnames)
+      Fqix::BinaryIO.write_u64(io, windows_offset)
+    end
+  end
 end
 
 describe Fqix::Fastq do
@@ -191,6 +214,34 @@ describe Fqix::Index do
       SpecIndexSupport.write_index_with_version(index_path, 2_u32)
 
       expect_raises(Fqix::Error, "unsupported fqix version 2; please rebuild the index") do
+        Fqix::Index.read(index_path)
+      end
+    ensure
+      File.delete(index_path) if File.exists?(index_path)
+    end
+  end
+
+  it "rejects a corrupt index with an impossible checkpoint count" do
+    index_path = File.tempname("fqix-bad-checkpoint-count-spec", ".fqix")
+
+    begin
+      SpecIndexSupport.write_index_header(index_path, ncheckpoints: UInt64::MAX)
+
+      expect_raises(Fqix::Error, "invalid fqix index checkpoint count") do
+        Fqix::Index.read(index_path)
+      end
+    ensure
+      File.delete(index_path) if File.exists?(index_path)
+    end
+  end
+
+  it "rejects a corrupt index with an impossible name count" do
+    index_path = File.tempname("fqix-bad-name-count-spec", ".fqix")
+
+    begin
+      SpecIndexSupport.write_index_header(index_path, nnames: UInt64::MAX)
+
+      expect_raises(Fqix::Error, "invalid fqix index name count") do
         Fqix::Index.read(index_path)
       end
     ensure

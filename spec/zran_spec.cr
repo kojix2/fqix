@@ -146,6 +146,23 @@ module SpecZranSupport
 end
 
 describe Fqix::Zran do
+  it "rejects a corrupt temporary index with an impossible checkpoint count" do
+    tmp = File.tempname("fqix-zran-bad-count-spec", ".tmp")
+
+    begin
+      File.open(tmp, "wb") do |io|
+        io.write(Fqix::Zran::TMP_MAGIC.to_slice)
+        Fqix::BinaryIO.write_u64(io, UInt64::MAX)
+      end
+
+      expect_raises(Fqix::Error, "invalid temporary zran checkpoint count") do
+        Fqix::Zran.read_temp(tmp)
+      end
+    ensure
+      File.delete(tmp) if File.exists?(tmp)
+    end
+  end
+
   it "matches Mark Adler's zran extraction across many offsets" do
     SpecZranSupport.with_reference_gzip do |gz_path, plain|
       span = 1024_u64

@@ -30,9 +30,12 @@ module Fqix
     GZIP_WINDOW_BITS =     47
     RAW_WINDOW_BITS  =    -15
     TMP_MAGIC        = "FQIXZR1\0"
-    BLOCK_BOUNDARY   = 128
-    LAST_BLOCK       =  64
-    BITS_MASK        =   7
+    TMP_HEADER_SIZE  =     16_u64
+    TMP_ENTRY_SIZE   = 32_789_u64
+    BLOCK_BOUNDARY   =        128
+    LAST_BLOCK       =         64
+    BITS_MASK        =          7
+    MAX_ARRAY_SIZE   = Int32::MAX.to_u64
 
     struct Checkpoint
       getter out_offset : UInt64
@@ -82,6 +85,10 @@ module Fqix
           raise Error.new("invalid temporary zran file")
         end
         count = BinaryIO.read_u64(io)
+        file_size = File.size(path).to_u64
+        unless file_size >= TMP_HEADER_SIZE && count <= MAX_ARRAY_SIZE && count <= (file_size - TMP_HEADER_SIZE) // TMP_ENTRY_SIZE
+          raise Error.new("invalid temporary zran checkpoint count")
+        end
         cps = Array(Checkpoint).new(count.to_i)
         count.times do
           out_offset = BinaryIO.read_u64(io)

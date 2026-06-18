@@ -10,6 +10,8 @@ module Fqix
     VERSION              =  3_u32
     V3_HEADER_SIZE       = 72_u64
     CHECKPOINT_META_SIZE = 21_u64
+    MIN_NAME_ENTRY_SIZE  = 26_u64
+    MAX_ARRAY_SIZE       = Int32::MAX.to_u64
 
     def write(index : Index, path : String) : Nil
       File.open(path, "wb") do |io|
@@ -66,8 +68,11 @@ module Fqix
         unless version == VERSION
           raise Error.new("unsupported fqix version #{version}; please rebuild the index")
         end
-        BinaryIO.read_u16(io) # flags
-        BinaryIO.read_u16(io) # padding
+        flags = BinaryIO.read_u16(io)
+        padding = BinaryIO.read_u16(io)
+        unless flags == 0 && padding == 0
+          raise Error.new("unsupported fqix index header flags")
+        end
         source_size = BinaryIO.read_u64(io)
         source_mtime = BinaryIO.read_i64(io)
         checkpoint_span = BinaryIO.read_u64(io)
@@ -76,15 +81,28 @@ module Fqix
         ncheckpoints = BinaryIO.read_u64(io)
         nnames = BinaryIO.read_u64(io)
         windows_offset = BinaryIO.read_u64(io)
+
+        file_size = File.size(path).to_u64
+        if windows_offset > file_size || windows_offset < V3_HEADER_SIZE
+          raise Error.new("invalid fqix index window offset")
+        end
+        if source_path_len.to_u64 > windows_offset - V3_HEADER_SIZE
+          raise Error.new("invalid fqix index source path length")
+        end
+
         path_buf = Bytes.new(source_path_len)
         io.read_fully(path_buf)
         source_path = String.new(path_buf)
 
+        bytes_to_windows = windows_offset - io.pos.to_u64
+        ensure_table_fits!("checkpoint", ncheckpoints, bytes_to_windows, CHECKPOINT_META_SIZE)
         checkpoint_metas = Array(CheckpointMeta).new(ncheckpoints.to_i)
         ncheckpoints.times do
           checkpoint_metas << read_checkpoint_meta(io)
         end
 
+        bytes_to_windows = windows_offset - io.pos.to_u64
+        ensure_table_fits!("name", nnames, bytes_to_windows, MIN_NAME_ENTRY_SIZE)
         names = Array(NameEntry).new(nnames.to_i)
         nnames.times do
           names << read_name_entry(io)
@@ -115,6 +133,12 @@ module Fqix
           raise Error.new("read name too long for index: #{entry.name}")
         end
         2_u64 + name_size.to_u64 + 8_u64 + 8_u64 + 8_u64
+      end
+    end
+
+    private def ensure_table_fits!(table : String, count : UInt64, bytes_available : UInt64, min_entry_size : UInt64) : Nil
+      if count > MAX_ARRAY_SIZE || count > bytes_available // min_entry_size
+        raise Error.new("invalid fqix index #{table} count")
       end
     end
 
