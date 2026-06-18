@@ -97,7 +97,7 @@ jobs:
         run: |
           mkdir bin
           $exe = "bin/$env:BIN.exe"
-          crystal build --release src/cli.cr -o $exe
+          crystal build --release --static src/cli.cr -o $exe
           & ".\$exe" --help
           $pkg = "$env:BIN-$env:VERSION-${{ matrix.target }}"
           mkdir $pkg
