@@ -1,0 +1,6 @@
+title: fqix
+description: FASTQ read-name index for ordinary .fastq.gz files
+markdown: kramdown
+permalink: pretty
+plugins:
+  - jekyll-optional-front-matter
