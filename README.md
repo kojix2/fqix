@@ -2,11 +2,15 @@
 
 [![CI](https://github.com/kojix2/fqix/actions/workflows/ci.yml/badge.svg)](https://github.com/kojix2/fqix/actions/workflows/ci.yml)
 [![build](https://github.com/kojix2/fqix/actions/workflows/build.yml/badge.svg)](https://github.com/kojix2/fqix/actions/workflows/build.yml)
+[![Lines of Code](https://img.shields.io/endpoint?url=https%3A%2F%2Ftokei.kojix2.net%2Fbadge%2Fgithub%2Fkojix2%2Ffqix%2Flines)](https://tokei.kojix2.net/github/kojix2/fqix)
+![Static Badge](https://img.shields.io/badge/PURE-VIBE_CODING-magenta)
 
 fqix is a small command-line tool for fetching FASTQ records by read name from ordinary `fastq.gz` files.
 It builds a `.fqix` index so lookup can resume gzip inflation near the requested read instead of scanning from the beginning.
 
 Note: `fqix` currently expects FASTQ files sorted by read name. It does not work with randomly ordered FASTQ files.
+
+:alembic: Early Prototype
 
 ## Installation
 
@@ -194,6 +198,4 @@ Tests link Mark Adler's zran example as a reference implementation, so a C compi
 
 fqix is licensed under the MIT License.
 
-The zran-related implementation in `src/fqix/zran.cr` is distributed under the [zlib License](https://github.com/madler/zlib/blob/develop/LICENSE). It is based on Mark Adler's [zran example](https://github.com/madler/zlib/tree/develop/examples) from [zlib](https://github.com/madler/zlib).
-
-The reference zran files under `spec/support/` are Mark Adler's [zran example](https://github.com/madler/zlib/tree/develop/examples) and remain under the [zlib License](https://github.com/madler/zlib/blob/develop/LICENSE).
+The files under `spec/support/` and the implementation in `src/fqix/zran.cr` are based on Mark Adler's [zran](https://github.com/madler/zlib/tree/develop/examples) from [zlib](https://github.com/madler/zlib), and are distributed under the [zlib License](https://github.com/madler/zlib/blob/develop/LICENSE).
