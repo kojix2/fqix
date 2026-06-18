@@ -26,20 +26,45 @@ describe Fqix::CLI do
     status, stdout, stderr = SpecCliSupport.run_cli(["--help"])
 
     status.should eq(0)
-    stdout.should contain("fqix #{Fqix::VERSION}")
+    stdout.should contain("Program: fqix")
+    stdout.should contain("Version: #{Fqix::VERSION}")
     stdout.should contain("index")
     stdout.should contain("Options:")
     stderr.should be_empty
   end
 
-  it "prints subcommand help from OptionParser" do
+  it "prints subcommand help to stdout with help last" do
     status, stdout, stderr = SpecCliSupport.run_cli(["index", "--help"])
 
     status.should eq(0)
+    stdout.should contain("Build a read-name index for a FASTQ.gz file")
     stdout.should contain("Usage: fqix index")
-    stdout.should contain("--checkpoint-span=BYTES")
-    stdout.should contain("--name-interval=N")
+    stdout.should contain("Arguments:")
+    stdout.should contain("reads.fastq.gz  Input FASTQ.gz file")
+    stdout.should contain("-c, --checkpoint-span BYTES")
+    stdout.should contain("-n, --name-interval N")
+    stdout.should contain("-h, --help")
+    stdout.should_not contain("--version")
+    stdout.index!("-n, --name-interval N").should be < stdout.index!("-h, --help")
     stderr.should be_empty
+  end
+
+  it "prints subcommand help to stderr and fails when required arguments are missing" do
+    status, stdout, stderr = SpecCliSupport.run_cli(["index"])
+
+    status.should eq(1)
+    stdout.should be_empty
+    stderr.should contain("Usage: fqix index")
+    stderr.should contain("-h, --help")
+    stderr.should contain("[fqix] one or more required arguments were not provided")
+  end
+
+  it "does not accept version as a subcommand option" do
+    status, stdout, stderr = SpecCliSupport.run_cli(["index", "--version"])
+
+    status.should eq(1)
+    stdout.should be_empty
+    stderr.should contain("Invalid option: --version")
   end
 
   it "reports an unknown command" do
@@ -51,18 +76,18 @@ describe Fqix::CLI do
   end
 
   it "indexes a small FASTQ.gz and gets one read through the CLI" do
-    File.tempfile("fqix-cli-small", ".fastq.gz") do |gz|
-      gz_path = gz.path
+    File.tempfile("fqix-cli-small", ".fastq.gz") do |gzip_file|
+      gz_path = gzip_file.path
       index_path = "#{gz_path}.fqix"
       records = [
         "@read001\nACGT\n+\nIIII\n",
         "@read002 comment\nTGCA\n+\nJJJJ\n",
         "@read003\nGATTACA\n+\nHHHHHHH\n",
       ]
-      gz.close
+      gzip_file.close
       SpecCliSupport.write_gzip_fastq(gz_path, records)
 
-      status, stdout, stderr = SpecCliSupport.run_cli(["index", "--name-interval=1", gz_path])
+      status, stdout, stderr = SpecCliSupport.run_cli(["index", "-n", "1", gz_path])
       status.should eq(0)
       stdout.should be_empty
       stderr.should contain("wrote #{index_path}")

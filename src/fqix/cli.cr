@@ -6,6 +6,13 @@ require "./reader"
 
 module Fqix
   class CLI
+    private class CommandParser < OptionParser
+      def reset_for_subcommand : Nil
+        @handlers.clear
+        @flags.clear
+      end
+    end
+
     enum Command
       Help
       Version
@@ -66,9 +73,11 @@ module Fqix
       1
     end
 
-    private def build_parser(opt : Options) : OptionParser
-      OptionParser.new do |parser|
+    private def build_parser(opt : Options) : CommandParser
+      CommandParser.new do |parser|
         parser.banner = main_banner
+        parser.summary_width = 32
+        parser.summary_indent = "  "
 
         parser.on("index", "Build an index") do
           configure_index_command(parser, opt)
@@ -104,39 +113,72 @@ module Fqix
       end
     end
 
-    private def configure_index_command(parser : OptionParser, opt : Options)
+    private def configure_index_command(parser : CommandParser, opt : Options)
       opt.command = Command::Index
-      parser.banner = "Usage: fqix index [OPTIONS] <reads.fastq.gz>"
-      parser.on("-o FILE", "--output=FILE", "Write index to FILE [reads.fastq.gz.fqix]") { |v| opt.output = v }
-      parser.on("--checkpoint-span=BYTES", "Uncompressed bytes between zran checkpoints [4194304]") { |v| opt.checkpoint_span = parse_u64(v, "checkpoint span") }
-      parser.on("--name-interval=N", "Store one read-name anchor every N records [1024]") { |v| opt.name_interval = parse_u32(v, "name interval") }
+      parser.reset_for_subcommand
+      parser.banner = command_banner(
+        "Build a read-name index for a FASTQ.gz file",
+        "fqix index [OPTIONS] reads.fastq.gz",
+        [
+          {"reads.fastq.gz", "Input FASTQ.gz file"},
+        ]
+      )
+      parser.on("-o", "--output FILE", "FQIX index path [reads.fastq.gz.fqix]") { |v| opt.output = v }
+      parser.on("-c", "--checkpoint-span BYTES", "Uncompressed bytes between zran checkpoints [4194304]") { |v| opt.checkpoint_span = parse_u64(v, "checkpoint span") }
+      parser.on("-n", "--name-interval N", "Store one read-name anchor every N records [1024]") { |v| opt.name_interval = parse_u32(v, "name interval") }
+      parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
     end
 
-    private def configure_get_command(parser : OptionParser, opt : Options)
+    private def configure_get_command(parser : CommandParser, opt : Options)
       opt.command = Command::Get
-      parser.banner = "Usage: fqix get [OPTIONS] <reads.fastq.gz> <read-name> [read-name ...]"
-      parser.on("-i FILE", "--index=FILE", "Use index FILE [reads.fastq.gz.fqix]") { |v| opt.index_path = v }
-      parser.on("--scan-bytes=BYTES", "Maximum bytes to inflate after sparse anchor [16777216]") { |v| opt.scan_bytes = parse_u64(v, "scan bytes") }
+      parser.reset_for_subcommand
+      parser.banner = command_banner(
+        "Fetch FASTQ records by read name",
+        "fqix get [OPTIONS] reads.fastq.gz read-name...",
+        [
+          {"reads.fastq.gz", "Input FASTQ.gz file"},
+          {"read-name...", "Read name to fetch"},
+        ]
+      )
+      parser.on("-i", "--index FILE", "FQIX index path [reads.fastq.gz.fqix]") { |v| opt.index_path = v }
+      parser.on("-s", "--scan-limit BYTES", "Maximum bytes to inflate after sparse anchor [16777216]") { |v| opt.scan_bytes = parse_u64(v, "scan limit") }
+      parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
     end
 
-    private def configure_show_command(parser : OptionParser, opt : Options)
+    private def configure_show_command(parser : CommandParser, opt : Options)
       opt.command = Command::Show
-      parser.banner = "Usage: fqix show [OPTIONS] <index.fqix>"
-      parser.on("--raw", "Print sparse name entries") { opt.raw = true }
+      parser.reset_for_subcommand
+      parser.banner = command_banner(
+        "Show index metadata",
+        "fqix show [OPTIONS] index.fqix",
+        [
+          {"index.fqix", "Input FQIX index file"},
+        ]
+      )
+      parser.on("--anchors", "Print sparse name entries") { opt.raw = true }
+      parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
     end
 
-    private def configure_check_command(parser : OptionParser, opt : Options)
+    private def configure_check_command(parser : CommandParser, opt : Options)
       opt.command = Command::Check
-      parser.banner = "Usage: fqix check [OPTIONS] <reads.fastq.gz>"
-      parser.on("-i FILE", "--index=FILE", "Use index FILE [reads.fastq.gz.fqix]") { |v| opt.index_path = v }
+      parser.reset_for_subcommand
+      parser.banner = command_banner(
+        "Check whether an index is stale",
+        "fqix check [OPTIONS] reads.fastq.gz",
+        [
+          {"reads.fastq.gz", "Input FASTQ.gz file"},
+        ]
+      )
+      parser.on("-i", "--index FILE", "FQIX index path [reads.fastq.gz.fqix]") { |v| opt.index_path = v }
+      parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
     end
 
     private def run_index(args : Array(String), opt : Options) : Int32
-      gz = args.shift? || raise Error.new("missing FASTQ.gz path")
+      gz = args.shift? || return print_required_args_error(opt)
       raise Error.new("too many arguments") unless args.empty?
 
       index = Index.build(gz, opt.checkpoint_span, opt.name_interval)
@@ -147,9 +189,9 @@ module Fqix
     end
 
     private def run_get(args : Array(String), opt : Options) : Int32
-      gz = args.shift? || raise Error.new("missing FASTQ.gz path")
+      gz = args.shift? || return print_required_args_error(opt)
       names = args
-      raise Error.new("missing read name") if names.empty?
+      return print_required_args_error(opt) if names.empty?
 
       idx_path = opt.index_path || Index.default_path(gz)
       idx = Index.read(idx_path)
@@ -166,14 +208,14 @@ module Fqix
         in .not_found?
           @err.puts "fqix: not found: #{name}"
         in .scan_limit_reached?
-          @err.puts "fqix: scan limit reached before finding #{name}; try increasing --scan-bytes"
+          @err.puts "fqix: scan limit reached before finding #{name}; try increasing --scan-limit"
         end
       end
       found == names.size ? 0 : 2
     end
 
     private def run_show(args : Array(String), opt : Options) : Int32
-      path = args.shift? || raise Error.new("missing index path")
+      path = args.shift? || return print_required_args_error(opt)
       raise Error.new("too many arguments") unless args.empty?
 
       idx = Index.read(path)
@@ -194,7 +236,7 @@ module Fqix
     end
 
     private def run_check(args : Array(String), opt : Options) : Int32
-      gz = args.shift? || raise Error.new("missing FASTQ.gz path")
+      gz = args.shift? || return print_required_args_error(opt)
       raise Error.new("too many arguments") unless args.empty?
 
       idx_path = opt.index_path || Index.default_path(gz)
@@ -213,15 +255,49 @@ module Fqix
       0
     end
 
+    private def print_required_args_error(opt : Options) : Int32
+      @err.puts opt.help_message
+      @err.puts
+      @err.puts "[fqix] one or more required arguments were not provided"
+      1
+    end
+
     private def main_banner : String
       <<-BANNER
-        fqix #{VERSION}
 
-        Usage:
-          fqix [COMMAND] [OPTIONS]
+        Program: fqix
+        Version: #{VERSION}
+        Source:  #{REPOURL}
+
+        Usage:   fqix <COMMAND> [OPTIONS]
 
         Commands:
         BANNER
+    end
+
+    private def command_banner(description : String,
+                               usage : String,
+                               arguments : Array(Tuple(String, String))) : String
+      String.build do |io|
+        io.puts
+        io.puts description
+        io.puts
+        io.puts "Usage: #{usage}"
+        io.puts
+        io.puts "Arguments:"
+        write_help_rows(io, arguments)
+        io.puts
+        io << "Options:"
+      end
+    end
+
+    private def write_help_rows(io : IO, rows : Array(Tuple(String, String))) : Nil
+      width = rows.max_of { |name, _summary| name.size }
+      rows.each do |name, summary|
+        io << "  " << name << "  "
+        io << " " * (width - name.size)
+        io.puts summary
+      end
     end
 
     private def parse_u64(s : String, label : String) : UInt64

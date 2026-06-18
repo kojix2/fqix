@@ -47,7 +47,7 @@ fqix check reads.fastq.gz
 
 ```sh
 fqix index --checkpoint-span 4194304 --name-interval 1024 reads.fastq.gz
-fqix get --scan-bytes 16777216 reads.fastq.gz read_001
+fqix get --scan-limit 16777216 reads.fastq.gz read_001
 ```
 
 `--checkpoint-span` controls the target distance between gzip restart points in
@@ -56,5 +56,5 @@ uncompressed bytes. Actual distances depend on deflate block boundaries.
 `--name-interval` controls how many FASTQ records are skipped between sparse
 read-name anchors.
 
-`--scan-bytes` controls how much data is inflated after a sparse anchor during
+`--scan-limit` controls how much data is inflated after a sparse anchor during
 lookup.

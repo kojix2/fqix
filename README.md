@@ -107,7 +107,7 @@ fqix show reads.fastq.gz.fqix
 Print stored read-name anchors:
 
 ```sh
-fqix show --raw reads.fastq.gz.fqix
+fqix show --anchors reads.fastq.gz.fqix
 ```
 
 ### `fqix check`
@@ -144,10 +144,10 @@ fqix index --checkpoint-span 4194304 --name-interval 1024 reads.fastq.gz
 Increase the forward scan limit during lookup:
 
 ```sh
-fqix get --scan-bytes 16777216 reads.fastq.gz read_001
+fqix get --scan-limit 16777216 reads.fastq.gz read_001
 ```
 
-If lookup reports `scan limit reached`, increasing `--scan-bytes` may help.
+If lookup reports `scan limit reached`, increasing `--scan-limit` may help.
 
 ## FASTQ Assumptions
 
