@@ -14,8 +14,8 @@ requested read is found.
 ## Documentation
 
 - [Usage](usage.html)
+- [How it works](how-it-works.html)
 - [FQIX file format](fqix-format.html)
-- [License](license.html)
 - [API documentation](api/)
 
 ## Status
@@ -34,3 +34,11 @@ Known limitations:
   time. Rewrites that keep the same size within the same second may not be
   reported as stale.
 - Parallel lookup is not implemented yet.
+
+## License
+
+fqix is licensed under the MIT License.
+
+The files under `spec/support/` and the implementation in `src/fqix/zran.cr`
+are based on Mark Adler's zran from zlib, and are distributed under the zlib
+License.
