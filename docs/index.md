@@ -13,8 +13,8 @@ requested read is found.
 
 ## Documentation
 
-- [Usage](usage/)
-- [License](license/)
+- [Usage](usage.html)
+- [License](license.html)
 - [API documentation](api/)
 
 ## Status
