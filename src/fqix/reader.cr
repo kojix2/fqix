@@ -1,16 +1,12 @@
 require "./fastq"
 require "./index"
-require "./order"
 require "./zran"
 
 module Fqix
   class Reader
-    DEFAULT_SCAN_BYTES = 16_u64 * 1024_u64 * 1024_u64
-
     enum FetchStatus
       Found
       NotFound
-      ScanLimitReached
     end
 
     record FetchResult, status : FetchStatus, record : String? do
@@ -21,122 +17,58 @@ module Fqix
       def self.not_found : FetchResult
         new(FetchStatus::NotFound, nil)
       end
-
-      def self.scan_limit_reached : FetchResult
-        new(FetchStatus::ScanLimitReached, nil)
-      end
     end
 
     def initialize(@gz_path : String, @index : Index)
     end
 
-    def fetch(name : String, scan_bytes : UInt64 = DEFAULT_SCAN_BYTES) : String?
-      result = fetch_with_status(name, scan_bytes)
+    def fetch(name : String) : String?
+      result = fetch_with_status(name)
       result.status.found? ? result.record : nil
     end
 
-    def fetch_with_status(name : String, scan_bytes : UInt64 = DEFAULT_SCAN_BYTES) : FetchResult
-      fetch_many([name], scan_bytes).first
+    def fetch_with_status(name : String) : FetchResult
+      fetch_many([name]).first
     end
 
-    def fetch_many(names : Array(String), scan_bytes : UInt64 = DEFAULT_SCAN_BYTES) : Array(FetchResult)
-      results = Array(FetchResult).new(names.size, FetchResult.not_found)
-      groups = Hash(Tuple(UInt64, UInt64), Array(Tuple(Int32, String))).new do |hash, key|
-        hash[key] = [] of Tuple(Int32, String)
-      end
-
-      names.each_with_index do |name, index|
-        next unless entry = @index.find_floor_name(name)
-
-        groups[{entry.checkpoint_id, entry.delta}] << {index, name}
-      end
-
-      groups.each do |(checkpoint_id, delta), requests|
-        cp = @index.checkpoint(checkpoint_id.to_i)
-        scanner = BatchRecordScanner.new(requests, results)
-        limit_reached = Zran.extract_to(@gz_path, cp, delta, scan_bytes, ->(chunk : Bytes) { scanner.feed(chunk) })
-        scanner.finish
-        scanner.mark_unresolved(limit_reached)
-      end
-
-      results
+    def fetch_all(name : String) : Array(String)
+      fetch_matches(name).map(&.[1])
     end
 
-    # Streaming, four-line FASTQ matcher for one or more query names. Fed
-    # decompressed chunks during extraction, it stops once every query in its
-    # group is found or ordered-past.
-    private class BatchRecordScanner
-      def initialize(requests : Array(Tuple(Int32, String)), @results : Array(FetchResult))
-        @targets = Hash(String, Array(Int32)).new do |hash, key|
-          hash[key] = [] of Int32
+    def fetch_matches(name : String) : Array(Tuple(UInt64, String))
+      @index.find_entries(name).map { |entry| {entry.record_number, fetch_entry(name, entry)} }
+    end
+
+    def fetch_many(names : Array(String)) : Array(FetchResult)
+      names.map do |name|
+        entries = @index.find_entries(name)
+        if entry = entries.first?
+          FetchResult.found(fetch_entry(name, entry))
+        else
+          FetchResult.not_found
         end
-        requests.each do |index, name|
-          @targets[name] << index
-        end
-
-        @unresolved = @targets.keys
-        @buf = IO::Memory.new    # full bytes of the record being assembled
-        @header = IO::Memory.new # bytes of the current header line only
-        @framer = Fastq::StreamParser.new(
-          ->(segment : Bytes, line_in_record : Int32, _line_start : UInt64) {
-            @buf.write(segment)
-            @header.write(segment) if line_in_record == 0
-          },
-          ->(_record_start : UInt64) {
-            decide
-            !done?
-          }
-        )
       end
+    end
 
-      def feed(chunk : Bytes) : Bool
-        @framer.feed(chunk)
+    private def fetch_entry(query : String, entry : Entry) : String
+      checkpoint_id = Index.checkpoint_for(@index.checkpoint_metas, entry.record_offset)
+      checkpoint = @index.checkpoint(checkpoint_id)
+      delta = entry.record_offset - @index.checkpoint_metas[checkpoint_id].out_offset
+      output = IO::Memory.new
+      Zran.extract_to(@gz_path, checkpoint, delta, entry.record_size, ->(chunk : Bytes) {
+        output.write(chunk)
+        true
+      })
+      record = output.to_s
+      newline = record.index('\n')
+      header = newline ? record[0, newline + 1] : record
+      raise Error.new("index/input mismatch: empty FASTQ record at #{entry.record_offset}") if header.empty?
+      actual = Fastq.name_from_header(header)
+      expected = @index.normalize_query(query)
+      unless actual == expected
+        raise Error.new("index/input mismatch for #{expected}: found #{actual} at indexed offset")
       end
-
-      def finish : Nil
-        @framer.finish(strict: false) unless done?
-      end
-
-      def mark_unresolved(limit_reached : Bool) : Nil
-        status = limit_reached ? FetchResult.scan_limit_reached : FetchResult.not_found
-        @unresolved.each do |name|
-          @targets[name].each do |index|
-            @results[index] = status
-          end
-        end
-        @unresolved.clear
-      end
-
-      private def decide : Nil
-        name = Fastq.name_from_header(@header.to_s)
-        record = nil.as(String?)
-        next_unresolved = [] of String
-
-        @unresolved.each do |query|
-          order = Order.compare(name, query)
-          if order == 0 && name == query
-            found_record = record || @buf.to_s
-            record = found_record
-            @targets[query].each do |index|
-              @results[index] = FetchResult.found(found_record)
-            end
-          elsif order > 0
-            @targets[query].each do |index|
-              @results[index] = FetchResult.not_found
-            end
-          else
-            next_unresolved << query
-          end
-        end
-
-        @unresolved = next_unresolved
-        @buf.clear
-        @header.clear
-      end
-
-      private def done? : Bool
-        @unresolved.empty?
-      end
+      record
     end
   end
 end

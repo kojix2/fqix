@@ -6,9 +6,7 @@
 ![Static Badge](https://img.shields.io/badge/PURE-VIBE_CODING-magenta)
 
 fqix is a small command-line tool for fetching FASTQ records by read name from ordinary `fastq.gz` files.
-It builds a `.fqix` index so lookup can resume gzip inflation near the requested read instead of scanning from the beginning.
-
-Note: `fqix` currently expects FASTQ files sorted by read name. It does not work with randomly ordered FASTQ files.
+It builds a `.fqix` index so lookup can resume gzip inflation near the requested read instead of decompressing from the beginning.
 
 :alembic: Early Prototype
 
@@ -49,23 +47,24 @@ Useful variants:
 ```sh
 fqix index -o reads.fqix reads.fastq.gz
 fqix get -i reads.fqix reads.fastq.gz read_001
+fqix get --first reads.fastq.gz duplicate_name
+fqix get --count --list names.txt reads.fastq.gz
 fqix show reads.fastq.gz.fqix
-fqix show --anchors reads.fastq.gz.fqix
+fqix show --entries reads.fastq.gz.fqix
 fqix check reads.fastq.gz
 ```
 
-Index density and lookup scan limit can be tuned when needed:
+Checkpoint density can be tuned when needed:
 
 ```sh
-fqix index --checkpoint-span 4194304 --name-interval 1024 reads.fastq.gz
-fqix get --scan-limit 16777216 reads.fastq.gz read_001
+fqix index --checkpoint-span 4194304 reads.fastq.gz
 ```
 
 Run `fqix --help` or `fqix <command> --help` for the full option list. If any requested read is missing, `fqix get` writes a message to stderr and exits with code `2`.
 
 ## FASTQ Assumptions
 
-`fqix` expects name-sorted `.fastq.gz` files with ordinary four-line FASTQ records:
+`fqix` expects ordinary four-line FASTQ records in a `.fastq.gz` file. Read names do not need to be sorted.
 
 ```text
 @read_001 optional comment
@@ -81,9 +80,9 @@ Multiline sequence or quality fields are not supported. The read name is the tex
 A `.fqix` index stores:
 
 - [zran](https://github.com/madler/zlib/blob/develop/examples/zran.h)-style checkpoints for resuming gzip inflation
-- a sparse read-name index
+- one hash-sorted entry for every FASTQ record, plus a read-name string table
 
-`fqix get` finds a nearby read-name anchor, resumes from the nearest gzip checkpoint, then scans forward to the requested read.
+`fqix get` hashes the query name, checks hash-matching entries with an exact name comparison, resumes from the nearest gzip checkpoint, and extracts the indexed record size.
 
 ## Limitations
 

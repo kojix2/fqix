@@ -22,14 +22,23 @@ module Fqix
       Check
     end
 
+    enum GetOrder
+      Query
+      Input
+    end
+
     class Options
       property command = Command::Help
       property output : String?
       property index_path : String?
       property checkpoint_span = Index::DEFAULT_CHECKPOINT_SPAN
-      property name_interval = Index::DEFAULT_NAME_INTERVAL
-      property scan_bytes = Reader::DEFAULT_SCAN_BYTES
+      property list_path : String?
+      property get_order = GetOrder::Input
       property? raw = false
+      property? first = false
+      property? count = false
+      property? all = true
+      property? unique = false
       property? help = false
       property help_message : String?
     end
@@ -125,7 +134,6 @@ module Fqix
       )
       parser.on("-o", "--output FILE", "FQIX index path [reads.fastq.gz.fqix]") { |v| opt.output = v }
       parser.on("-c", "--checkpoint-span BYTES", "Uncompressed bytes between zran checkpoints [4194304]") { |v| opt.checkpoint_span = parse_u64(v, "checkpoint span") }
-      parser.on("-n", "--name-interval N", "Store one read-name anchor every N records [1024]") { |v| opt.name_interval = parse_u32(v, "name interval") }
       parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
     end
@@ -142,7 +150,12 @@ module Fqix
         ]
       )
       parser.on("-i", "--index FILE", "FQIX index path [reads.fastq.gz.fqix]") { |v| opt.index_path = v }
-      parser.on("-s", "--scan-limit BYTES", "Maximum bytes to inflate after sparse anchor [16777216]") { |v| opt.scan_bytes = parse_u64(v, "scan limit") }
+      parser.on("--first", "Return only the first matching record for each name") { opt.first = true; opt.all = false }
+      parser.on("--count", "Print match counts instead of FASTQ records") { opt.count = true }
+      parser.on("--all", "Return all matching records [default]") { opt.all = true; opt.first = false }
+      parser.on("--unique", "Fail when a requested name has multiple matches") { opt.unique = true }
+      parser.on("--list FILE", "Read query names from FILE") { |v| opt.list_path = v }
+      parser.on("--order ORDER", "Output order: input or query [input]") { |v| opt.get_order = parse_get_order(v) }
       parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
     end
@@ -157,7 +170,7 @@ module Fqix
           {"index.fqix", "Input FQIX index file"},
         ]
       )
-      parser.on("--anchors", "Print sparse name entries") { opt.raw = true }
+      parser.on("--entries", "Print hash-sorted entries") { opt.raw = true }
       parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
     end
@@ -181,16 +194,20 @@ module Fqix
       gz = args.shift? || return print_required_args_error(opt)
       raise Error.new("too many arguments") unless args.empty?
 
-      index = Index.build(gz, opt.checkpoint_span, opt.name_interval)
+      index = Index.build(gz, opt.checkpoint_span)
       out_path = opt.output || Index.default_path(gz)
       index.write(out_path)
       @err.puts "wrote #{out_path}"
       0
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def run_get(args : Array(String), opt : Options) : Int32
       gz = args.shift? || return print_required_args_error(opt)
       names = args
+      if list_path = opt.list_path
+        names = names + File.read_lines(list_path).map(&.strip).reject(&.empty?)
+      end
       return print_required_args_error(opt) if names.empty?
 
       idx_path = opt.index_path || Index.default_path(gz)
@@ -198,20 +215,40 @@ module Fqix
       raise Error.new("index is stale for #{gz}") if idx.stale_for?(gz)
 
       reader = Reader.new(gz, idx)
-      found = 0
-      results = reader.fetch_many(names, opt.scan_bytes)
-      names.zip(results).each do |name, result|
-        case result.status
-        in .found?
-          @out << result.record
-          found += 1
-        in .not_found?
+      found_names = 0
+      matches = [] of Tuple(UInt64, String)
+      names.each do |name|
+        records = reader.fetch_matches(name)
+        if records.empty?
           @err.puts "fqix: not found: #{name}"
-        in .scan_limit_reached?
-          @err.puts "fqix: scan limit reached before finding #{name}; try increasing --scan-limit"
+        else
+          if opt.unique? && records.size > 1
+            @err.puts "fqix: not unique: #{name}"
+            next
+          end
+          found_names += 1
+          if opt.count?
+            @out.puts "#{name}\t#{records.size}"
+          elsif opt.first?
+            matches << records.first
+          else
+            matches.concat(records)
+          end
         end
       end
-      found == names.size ? 0 : 2
+      unless opt.count?
+        ordered =
+          case opt.get_order
+          in .query?
+            matches
+          in .input?
+            matches.sort_by(&.[0])
+          end
+        ordered.each do |_, record|
+          @out << record
+        end
+      end
+      found_names == names.size ? 0 : 2
     end
 
     private def run_show(args : Array(String), opt : Options) : Int32
@@ -220,17 +257,27 @@ module Fqix
 
       idx = Index.read(path)
       if opt.raw?
-        idx.names.each do |entry|
-          @out.puts [entry.name, entry.uncompressed_offset, entry.checkpoint_id, entry.delta].join('\t')
+        idx.entries.each do |entry|
+          @out.puts [
+            idx.entry_name(entry),
+            entry.name_hash,
+            entry.record_number,
+            entry.record_offset,
+            entry.record_size,
+          ].join('\t')
         end
       else
         @out.puts "version\t#{idx.format_version}"
         @out.puts "source_size\t#{idx.source_size}"
         @out.puts "source_mtime\t#{idx.source_mtime}"
         @out.puts "checkpoint_span\t#{idx.checkpoint_span}"
-        @out.puts "name_interval\t#{idx.name_interval}"
+        @out.puts "hash_algorithm\t#{idx.hash_algorithm}"
+        @out.puts "hash_seed\t#{idx.hash_seed}"
+        @out.puts "name_mode\t#{idx.name_mode}"
+        @out.puts "record_count\t#{idx.record_count}"
+        @out.puts "input_names_sorted\t#{idx.input_names_sorted?}"
         @out.puts "checkpoints\t#{idx.checkpoint_metas.size}"
-        @out.puts "name_entries\t#{idx.names.size}"
+        @out.puts "entries\t#{idx.entries.size}"
       end
       0
     end
@@ -304,10 +351,15 @@ module Fqix
       s.to_u64? || raise Error.new("invalid #{label}: #{s}")
     end
 
-    private def parse_u32(s : String, label : String) : UInt32
-      v = s.to_u32? || raise Error.new("invalid #{label}: #{s}")
-      raise Error.new("#{label} must be greater than zero") if v == 0
-      v
+    private def parse_get_order(s : String) : GetOrder
+      case s
+      when "query"
+        GetOrder::Query
+      when "input"
+        GetOrder::Input
+      else
+        raise Error.new("invalid output order: #{s}")
+      end
     end
   end
 end

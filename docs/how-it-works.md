@@ -1,6 +1,6 @@
 # How It Works
 
-`fqix` builds a sparse read-name index for ordinary `.fastq.gz` files without
+`fqix` builds a hash-based read-name index for ordinary `.fastq.gz` files without
 recompressing them.
 
 ## Indexing
@@ -9,31 +9,24 @@ recompressing them.
 
 - zran-style gzip restart checkpoints, used to resume inflation near a target
   region
-- sparse read-name anchors, used to find a nearby FASTQ record by name
+- one entry for every FASTQ record, sorted by read-name hash and record number
 
-The input must be sorted by read name. This lets lookup scan forward from a
-nearby anchor and stop once it has passed the requested name.
+Each entry stores the normalized name location, record number, uncompressed
+record offset, and record size. The input FASTQ order is preserved through
+`record_number`; it is not required to be sorted by read name.
 
 ## Lookup
 
-`fqix get` finds the nearest stored read-name anchor before the query, resumes
-gzip inflation from the closest checkpoint before that anchor, and scans forward
-through FASTQ records until the requested read is found.
-
-If a read is not found before the scan limit, lookup fails with `scan limit
-reached`. Increasing `--scan-limit` can help when checkpoints or anchors are far
-apart.
+`fqix get` hashes the query name, binary-searches the matching hash range,
+checks candidate names with an exact byte comparison, resumes gzip inflation from
+the closest checkpoint before the record offset, and extracts the indexed record
+size. The extracted header is normalized again and checked against the query.
 
 ## Tuning
 
 `--checkpoint-span` controls the target spacing between gzip restart
 checkpoints in uncompressed bytes. The actual spacing depends on deflate block
 boundaries in the source gzip stream.
-
-`--name-interval` controls how often read-name anchors are stored. Smaller
-values make lookup scan less, but increase index size.
-
-`--scan-limit` controls the maximum forward scan during `fqix get`.
 
 ## Freshness Check
 

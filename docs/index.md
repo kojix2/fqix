@@ -3,12 +3,12 @@
 `fqix` is an experimental FASTQ read-name index for ordinary `.fastq.gz`
 files.
 
-It is intended for name-sorted FASTQ files. It does not require re-compressing
-with bgzip.
+It does not require read-name sorted input or re-compressing with bgzip.
 
-The index combines zran-style gzip restart checkpoints with a sparse read-name
-index. Lookup finds a nearby read-name anchor, resumes gzip inflation from the
-nearest checkpoint, and scans forward until the requested read is found.
+The index combines zran-style gzip restart checkpoints with one hash-sorted
+entry per FASTQ record. Lookup hashes the query, verifies matching names exactly,
+resumes gzip inflation from the nearest checkpoint, and extracts the indexed
+record.
 
 ## Links
 
@@ -28,10 +28,8 @@ This is a minimal prototype.
 
 Known limitations:
 
-- FASTQ must be sorted by read name.
 - FASTQ records must use the standard four-line layout; wrapped multiline
   sequence or quality fields are not supported.
-- The index is sparse, not exact.
 - Some gzip files may have sparse deflate block boundaries, so zran checkpoints
   may be farther apart than requested.
 - `fqix check` compares the source file size and second-resolution modification

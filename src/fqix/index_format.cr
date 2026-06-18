@@ -6,11 +6,11 @@ module Fqix
   module IndexFormat
     extend self
 
-    MAGIC                = "FQIX\u{1}\0\0\0"
-    VERSION              =  1_u32
-    HEADER_SIZE          = 72_u64
-    CHECKPOINT_META_SIZE = 21_u64
-    MIN_NAME_ENTRY_SIZE  = 26_u64
+    MAGIC                = "FQIX\u{2}\0\0\0"
+    VERSION              =   2_u32
+    HEADER_SIZE          = 112_u64
+    CHECKPOINT_META_SIZE =  21_u64
+    ENTRY_SIZE           =  48_u64
     MAX_ARRAY_SIZE       = Int32::MAX.to_u64
 
     def write(index : Index, path : String) : Nil
@@ -20,10 +20,11 @@ module Fqix
           raise Error.new("source path too long for index: #{index.source_path}")
         end
 
-        windows_offset = HEADER_SIZE +
-                         source_path_bytes.size.to_u64 +
-                         index.checkpoint_metas.size.to_u64 * CHECKPOINT_META_SIZE +
-                         name_table_size(index.names)
+        entries_offset = HEADER_SIZE + source_path_bytes.size.to_u64
+        name_table_offset = entries_offset + index.entries.size.to_u64 * ENTRY_SIZE
+        windows_offset = name_table_offset +
+                         index.name_table.size.to_u64 +
+                         index.checkpoint_metas.size.to_u64 * CHECKPOINT_META_SIZE
 
         io.write(MAGIC.to_slice)
         BinaryIO.write_u32(io, VERSION)
@@ -32,19 +33,37 @@ module Fqix
         BinaryIO.write_u64(io, index.source_size)
         BinaryIO.write_i64(io, index.source_mtime)
         BinaryIO.write_u64(io, index.checkpoint_span)
-        BinaryIO.write_u32(io, index.name_interval)
-        BinaryIO.write_u32(io, source_path_bytes.size.to_u32)
+        BinaryIO.write_u8(io, index.hash_algorithm.value)
+        BinaryIO.write_u8(io, index.name_mode.value)
+        BinaryIO.write_u8(io, index.input_names_sorted? ? 1_u8 : 0_u8)
+        BinaryIO.write_u8(io, 0_u8) # padding
+        BinaryIO.write_u64(io, index.hash_seed)
+        BinaryIO.write_u64(io, index.record_count)
         BinaryIO.write_u64(io, index.checkpoint_metas.size.to_u64)
-        BinaryIO.write_u64(io, index.names.size.to_u64)
+        BinaryIO.write_u64(io, index.entries.size.to_u64)
+        BinaryIO.write_u32(io, source_path_bytes.size.to_u32)
+        BinaryIO.write_u64(io, index.name_table.size.to_u64)
+        BinaryIO.write_u64(io, entries_offset)
+        BinaryIO.write_u64(io, name_table_offset)
         BinaryIO.write_u64(io, windows_offset)
         io.write(source_path_bytes)
 
-        index.checkpoint_metas.each do |checkpoint|
-          write_checkpoint_meta(io, checkpoint)
+        unless io.pos.to_u64 == entries_offset
+          raise Error.new("internal index layout error: entry offset mismatch")
         end
 
-        index.names.each do |entry|
-          write_name_entry(io, entry)
+        index.entries.each do |entry|
+          write_entry(io, entry)
+        end
+
+        unless io.pos.to_u64 == name_table_offset
+          raise Error.new("internal index layout error: name table offset mismatch")
+        end
+
+        io.write(index.name_table)
+
+        index.checkpoint_metas.each do |checkpoint|
+          write_checkpoint_meta(io, checkpoint)
         end
 
         unless io.pos.to_u64 == windows_offset
@@ -57,16 +76,20 @@ module Fqix
       end
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity
     def read(path : String) : Index
       File.open(path, "rb") do |io|
         magic = Bytes.new(8)
         io.read_fully(magic)
-        unless String.new(magic) == MAGIC
+        unless magic[0, 4] == "FQIX".to_slice
           raise Error.new("invalid fqix index magic")
         end
         version = BinaryIO.read_u32(io)
         unless version == VERSION
           raise Error.new("unsupported fqix version #{version}; please rebuild the index")
+        end
+        unless String.new(magic) == MAGIC
+          raise Error.new("invalid fqix index magic")
         end
         flags = BinaryIO.read_u16(io)
         padding = BinaryIO.read_u16(io)
@@ -76,17 +99,28 @@ module Fqix
         source_size = BinaryIO.read_u64(io)
         source_mtime = BinaryIO.read_i64(io)
         checkpoint_span = BinaryIO.read_u64(io)
-        name_interval = BinaryIO.read_u32(io)
-        source_path_len = BinaryIO.read_u32(io)
+        hash_algorithm = parse_hash_algorithm(BinaryIO.read_u8(io))
+        name_mode = parse_name_mode(BinaryIO.read_u8(io))
+        input_names_sorted_byte = BinaryIO.read_u8(io)
+        header_padding = BinaryIO.read_u8(io)
+        unless (input_names_sorted_byte == 0 || input_names_sorted_byte == 1) && header_padding == 0
+          raise Error.new("unsupported fqix index header flags")
+        end
+        hash_seed = BinaryIO.read_u64(io)
+        record_count = BinaryIO.read_u64(io)
         ncheckpoints = BinaryIO.read_u64(io)
-        nnames = BinaryIO.read_u64(io)
+        nentries = BinaryIO.read_u64(io)
+        source_path_len = BinaryIO.read_u32(io)
+        name_table_size = BinaryIO.read_u64(io)
+        entries_offset = BinaryIO.read_u64(io)
+        name_table_offset = BinaryIO.read_u64(io)
         windows_offset = BinaryIO.read_u64(io)
 
         file_size = File.size(path).to_u64
-        if windows_offset > file_size || windows_offset < HEADER_SIZE
-          raise Error.new("invalid fqix index window offset")
+        if entries_offset < HEADER_SIZE || name_table_offset < entries_offset || windows_offset < name_table_offset || windows_offset > file_size
+          raise Error.new("invalid fqix index section offset")
         end
-        if source_path_len.to_u64 > windows_offset - HEADER_SIZE
+        if source_path_len.to_u64 > entries_offset - HEADER_SIZE
           raise Error.new("invalid fqix index source path length")
         end
 
@@ -94,18 +128,29 @@ module Fqix
         io.read_fully(path_buf)
         source_path = String.new(path_buf)
 
-        bytes_to_windows = windows_offset - io.pos.to_u64
-        ensure_table_fits!("checkpoint", ncheckpoints, bytes_to_windows, CHECKPOINT_META_SIZE)
+        unless io.pos.to_u64 == entries_offset
+          raise Error.new("invalid fqix index entry offset")
+        end
+
+        ensure_table_fits!("entry", nentries, name_table_offset - entries_offset, ENTRY_SIZE)
+        entries = Array(Entry).new(nentries.to_i)
+        nentries.times do
+          entries << read_entry(io)
+        end
+
+        if io.pos.to_u64 != name_table_offset
+          raise Error.new("invalid fqix index name table offset")
+        end
+        if name_table_size > MAX_ARRAY_SIZE || name_table_size > windows_offset - name_table_offset
+          raise Error.new("invalid fqix index name table size")
+        end
+        name_table = Bytes.new(name_table_size.to_i)
+        io.read_fully(name_table)
+
+        ensure_table_fits!("checkpoint", ncheckpoints, windows_offset - io.pos.to_u64, CHECKPOINT_META_SIZE)
         checkpoint_metas = Array(CheckpointMeta).new(ncheckpoints.to_i)
         ncheckpoints.times do
           checkpoint_metas << read_checkpoint_meta(io)
-        end
-
-        bytes_to_windows = windows_offset - io.pos.to_u64
-        ensure_table_fits!("name", nnames, bytes_to_windows, MIN_NAME_ENTRY_SIZE)
-        names = Array(NameEntry).new(nnames.to_i)
-        nnames.times do
-          names << read_name_entry(io)
         end
 
         if io.pos.to_u64 != windows_offset
@@ -117,22 +162,17 @@ module Fqix
           source_size,
           source_mtime,
           checkpoint_span,
-          name_interval,
+          hash_algorithm,
+          hash_seed,
+          name_mode,
+          record_count,
+          input_names_sorted_byte == 1,
           checkpoint_metas,
-          names,
+          entries,
+          name_table,
           FileWindowStore.new(path, windows_offset),
           version
         )
-      end
-    end
-
-    private def name_table_size(names : Array(NameEntry)) : UInt64
-      names.sum(0_u64) do |entry|
-        name_size = entry.name.bytesize
-        if name_size > UInt16::MAX
-          raise Error.new("read name too long for index: #{entry.name}")
-        end
-        2_u64 + name_size.to_u64 + 8_u64 + 8_u64 + 8_u64
       end
     end
 
@@ -140,6 +180,18 @@ module Fqix
       if count > MAX_ARRAY_SIZE || count > bytes_available // min_entry_size
         raise Error.new("invalid fqix index #{table} count")
       end
+    end
+
+    private def parse_hash_algorithm(value : UInt8) : HashAlgorithm
+      HashAlgorithm.from_value(value)
+    rescue
+      raise Error.new("unsupported fqix hash algorithm #{value}")
+    end
+
+    private def parse_name_mode(value : UInt8) : NameMode
+      NameMode.from_value(value)
+    rescue
+      raise Error.new("unsupported fqix name mode #{value}")
     end
 
     private def write_checkpoint_meta(io : IO, checkpoint : CheckpointMeta) : Nil
@@ -157,27 +209,25 @@ module Fqix
       CheckpointMeta.new(out_offset, in_offset, bits, have)
     end
 
-    private def write_name_entry(io : IO, entry : NameEntry) : Nil
-      name_bytes = entry.name.to_slice
-      if name_bytes.size > UInt16::MAX
-        raise Error.new("read name too long for index: #{entry.name}")
-      end
-      BinaryIO.write_u16(io, name_bytes.size.to_u16)
-      io.write(name_bytes)
-      BinaryIO.write_u64(io, entry.uncompressed_offset)
-      BinaryIO.write_u64(io, entry.checkpoint_id)
-      BinaryIO.write_u64(io, entry.delta)
+    private def write_entry(io : IO, entry : Entry) : Nil
+      BinaryIO.write_u64(io, entry.name_hash)
+      BinaryIO.write_u64(io, entry.name_offset)
+      BinaryIO.write_u32(io, entry.name_length)
+      BinaryIO.write_u64(io, entry.record_number)
+      BinaryIO.write_u64(io, entry.record_offset)
+      BinaryIO.write_u64(io, entry.record_size)
+      BinaryIO.write_u32(io, entry.flags)
     end
 
-    private def read_name_entry(io : IO) : NameEntry
-      len = BinaryIO.read_u16(io)
-      buf = Bytes.new(len)
-      io.read_fully(buf)
-      name = String.new(buf)
-      uncompressed_offset = BinaryIO.read_u64(io)
-      checkpoint_id = BinaryIO.read_u64(io)
-      delta = BinaryIO.read_u64(io)
-      NameEntry.new(name, uncompressed_offset, checkpoint_id, delta)
+    private def read_entry(io : IO) : Entry
+      name_hash = BinaryIO.read_u64(io)
+      name_offset = BinaryIO.read_u64(io)
+      name_length = BinaryIO.read_u32(io)
+      record_number = BinaryIO.read_u64(io)
+      record_offset = BinaryIO.read_u64(io)
+      record_size = BinaryIO.read_u64(io)
+      flags = BinaryIO.read_u32(io)
+      Entry.new(name_hash, name_offset, name_length, record_number, record_offset, record_size, flags)
     end
   end
 end

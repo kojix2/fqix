@@ -1,6 +1,6 @@
 # FQIX File Format
 
-This document describes the current `.fqix` on-disk format, version 1.
+This document describes the current `.fqix` on-disk format, version 2.
 
 The format is little-endian. Integers are unsigned unless noted otherwise.
 Strings are stored as raw UTF-8 bytes without a trailing NUL.
@@ -10,39 +10,63 @@ Strings are stored as raw UTF-8 bytes without a trailing NUL.
 ```text
 header
 source path bytes
+entry table
+name string table
 checkpoint metadata table
-name anchor table
 checkpoint windows
 ```
 
-The first FASTQ record is always stored as a name anchor.
-
 ## Header
 
-The header is 72 bytes.
+The header is 112 bytes.
 
 | Offset | Size | Type | Field | Meaning |
 | ---: | ---: | --- | --- | --- |
-| 0 | 8 | bytes | magic | `FQIX\x01\0\0\0` |
-| 8 | 4 | u32 | version | Currently `1` |
+| 0 | 8 | bytes | magic | `FQIX\x02\0\0\0` |
+| 8 | 4 | u32 | version | Currently `2` |
 | 12 | 2 | u16 | flags | Reserved, must be `0` |
 | 14 | 2 | u16 | padding | Reserved, must be `0` |
 | 16 | 8 | u64 | source_size | Source `.fastq.gz` size in bytes |
 | 24 | 8 | i64 | source_mtime | Source mtime as Unix seconds |
 | 32 | 8 | u64 | checkpoint_span | Requested checkpoint span |
-| 40 | 4 | u32 | name_interval | Requested name anchor interval |
-| 44 | 4 | u32 | source_path_len | Byte length of the source path |
-| 48 | 8 | u64 | ncheckpoints | Number of checkpoint entries |
-| 56 | 8 | u64 | nnames | Number of name anchor entries |
-| 64 | 8 | u64 | windows_offset | File offset of checkpoint windows |
+| 40 | 1 | u8 | hash_algorithm | `1` = FNV-1a 64-bit |
+| 41 | 1 | u8 | name_mode | `1` = first token |
+| 42 | 1 | u8 | input_names_sorted | Diagnostic flag |
+| 43 | 1 | u8 | padding | Reserved, must be `0` |
+| 44 | 8 | u64 | hash_seed | Hash seed |
+| 52 | 8 | u64 | record_count | Number of FASTQ records |
+| 60 | 8 | u64 | ncheckpoints | Number of checkpoint entries |
+| 68 | 8 | u64 | nentries | Number of record entries |
+| 76 | 4 | u32 | source_path_len | Byte length of the source path |
+| 80 | 8 | u64 | name_table_size | Byte length of the name string table |
+| 88 | 8 | u64 | entries_offset | File offset of the entry table |
+| 96 | 8 | u64 | name_table_offset | File offset of the name string table |
+| 104 | 8 | u64 | windows_offset | File offset of checkpoint windows |
 
-Readers reject unknown versions and nonzero header flags.
+Readers reject non-v2 indexes with `unsupported fqix version N; please rebuild
+the index`.
 
-## Source Path
+## Entry Table
 
-Immediately after the header, `source_path_len` bytes store the source path used
-when the index was built. The path is informational; stale-index checks compare
-the current source file size and mtime against the header values.
+Each entry is 48 bytes and entries are sorted by `(name_hash, record_number)`.
+
+| Offset | Size | Type | Field | Meaning |
+| ---: | ---: | --- | --- | --- |
+| 0 | 8 | u64 | name_hash | Hash of the normalized read name |
+| 8 | 8 | u64 | name_offset | Offset into the name string table |
+| 16 | 4 | u32 | name_length | Name byte length |
+| 20 | 8 | u64 | record_number | FASTQ appearance order |
+| 28 | 8 | u64 | record_offset | Uncompressed FASTQ record start |
+| 36 | 8 | u64 | record_size | FASTQ record byte size |
+| 44 | 4 | u32 | flags | Reserved |
+
+Lookup binary-searches the hash range and verifies candidate names with an exact
+name-table byte comparison. The hash is only an accelerator; collisions are safe.
+
+## Name String Table
+
+The name string table stores concatenated normalized read names. Entries refer
+to slices by `(name_offset, name_length)`.
 
 ## Checkpoint Metadata
 
@@ -58,22 +82,6 @@ Each checkpoint metadata entry is 21 bytes.
 The corresponding 32 KiB dictionary window is stored later in the checkpoint
 window area.
 
-## Name Anchor Table
-
-Each name anchor entry is variable length.
-
-| Offset | Size | Type | Field | Meaning |
-| ---: | ---: | --- | --- | --- |
-| 0 | 2 | u16 | name_len | Read-name byte length |
-| 2 | name_len | bytes | name | Read name without the leading `@` |
-| 2 + name_len | 8 | u64 | uncompressed_offset | FASTQ record start offset |
-| 10 + name_len | 8 | u64 | checkpoint_id | Checkpoint metadata/window index |
-| 18 + name_len | 8 | u64 | delta | `uncompressed_offset - checkpoint.out_offset` |
-
-The name table is sparse. It is used to choose a nearby anchor; lookup then
-inflates and scans forward until the requested record is found or the scan
-limit is reached.
-
 ## Checkpoint Windows
 
 At `windows_offset`, checkpoint windows are stored back-to-back. Each checkpoint
@@ -88,7 +96,6 @@ checkpoint.
 
 ## Compatibility Notes
 
-- Version 1 indexes store windows after the name table and load them lazily.
-- Unknown index versions are rejected; rebuild the index with the current `fqix`.
+- Version 1 indexes are not read; rebuild them with the current `fqix`.
 - The format is tied to ordinary gzip streams and zran-style restart points, not
   BGZF blocks.

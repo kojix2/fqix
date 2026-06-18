@@ -43,7 +43,6 @@ Options:
 
 - `-o, --output FILE`: write the index to `FILE`.
 - `-c, --checkpoint-span BYTES`: target uncompressed spacing between gzip restart checkpoints.
-- `-n, --name-interval N`: store one read-name anchor every `N` FASTQ records.
 
 The default checkpoint span is `4194304` bytes. Actual checkpoint spacing
 depends on deflate block boundaries, so checkpoints may be farther apart than
@@ -58,20 +57,22 @@ fqix get [OPTIONS] reads.fastq.gz read-name...
 Options:
 
 - `-i, --index FILE`: use an explicit `.fqix` index path.
-- `-s, --scan-limit BYTES`: maximum decompressed bytes to scan after the selected anchor.
-
-If lookup reports `scan limit reached`, increase `--scan-limit` or rebuild with
-a smaller `--name-interval`.
+- `--first`: return only the first matching record for each requested name.
+- `--count`: print `name<TAB>count` instead of FASTQ records.
+- `--all`: return all matching records; this is the default.
+- `--unique`: fail when a requested name has multiple matches.
+- `--list FILE`: read additional query names from `FILE`, one name per line.
+- `--order input|query`: output FASTQ records in original input order or query order.
 
 ### `fqix show`
 
 ```sh
 fqix show reads.fastq.gz.fqix
-fqix show --anchors reads.fastq.gz.fqix
+fqix show --entries reads.fastq.gz.fqix
 ```
 
-Without `--anchors`, this prints index metadata. With `--anchors`, it also
-prints the sparse read-name anchor table.
+Without `--entries`, this prints index metadata. With `--entries`, it prints the
+hash-sorted entry table.
 
 ### `fqix check`
 
@@ -91,8 +92,8 @@ stale	reads.fastq.gz.fqix
 
 ## Input Requirements
 
-`fqix` expects ordinary four-line FASTQ records in a `.fastq.gz` file sorted by
-read name.
+`fqix` expects ordinary four-line FASTQ records in a `.fastq.gz` file. Read
+names do not need to be sorted.
 
 ```text
 @read_001 optional comment

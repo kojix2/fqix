@@ -42,10 +42,9 @@ describe Fqix::CLI do
     stdout.should contain("Arguments:")
     stdout.should contain("reads.fastq.gz  Input FASTQ.gz file")
     stdout.should contain("-c, --checkpoint-span BYTES")
-    stdout.should contain("-n, --name-interval N")
     stdout.should contain("-h, --help")
     stdout.should_not contain("--version")
-    stdout.index!("-n, --name-interval N").should be < stdout.index!("-h, --help")
+    stdout.index!("-c, --checkpoint-span BYTES").should be < stdout.index!("-h, --help")
     stderr.should be_empty
   end
 
@@ -87,7 +86,7 @@ describe Fqix::CLI do
       gzip_file.close
       SpecCliSupport.write_gzip_fastq(gz_path, records)
 
-      status, stdout, stderr = SpecCliSupport.run_cli(["index", "-n", "1", gz_path])
+      status, stdout, stderr = SpecCliSupport.run_cli(["index", gz_path])
       status.should eq(0)
       stdout.should be_empty
       stderr.should contain("wrote #{index_path}")
@@ -99,6 +98,68 @@ describe Fqix::CLI do
       stderr.should be_empty
     ensure
       File.delete(index_path) if index_path && File.exists?(index_path)
+    end
+  end
+
+  it "gets duplicate read names through the CLI in input order" do
+    File.tempfile("fqix-cli-duplicates", ".fastq.gz") do |gzip_file|
+      gz_path = gzip_file.path
+      index_path = "#{gz_path}.fqix"
+      records = [
+        "@dup\nAAAA\n+\nIIII\n",
+        "@other\nCCCC\n+\nIIII\n",
+        "@dup comment\nGGGG\n+\nIIII\n",
+      ]
+      gzip_file.close
+      SpecCliSupport.write_gzip_fastq(gz_path, records)
+
+      status, stdout, stderr = SpecCliSupport.run_cli(["index", gz_path])
+      status.should eq(0)
+      stdout.should be_empty
+      stderr.should contain("wrote #{index_path}")
+
+      status, stdout, stderr = SpecCliSupport.run_cli(["get", gz_path, "dup"])
+      status.should eq(0)
+      stdout.should eq(records[0] + records[2])
+      stderr.should be_empty
+    ensure
+      File.delete(index_path) if index_path && File.exists?(index_path)
+    end
+  end
+
+  it "supports duplicate query modes and query lists" do
+    File.tempfile("fqix-cli-query-modes", ".fastq.gz") do |gzip_file|
+      gz_path = gzip_file.path
+      index_path = "#{gz_path}.fqix"
+      list_path = File.tempname("fqix-cli-query-list", ".txt")
+      records = [
+        "@dup\nAAAA\n+\nIIII\n",
+        "@other\nCCCC\n+\nIIII\n",
+        "@dup comment\nGGGG\n+\nIIII\n",
+      ]
+      gzip_file.close
+      SpecCliSupport.write_gzip_fastq(gz_path, records)
+      File.write(list_path, "dup\nother\n")
+
+      SpecCliSupport.run_cli(["index", gz_path]).first.should eq(0)
+
+      status, stdout, stderr = SpecCliSupport.run_cli(["get", "--count", "--list", list_path, gz_path])
+      status.should eq(0)
+      stdout.should eq("dup\t2\nother\t1\n")
+      stderr.should be_empty
+
+      status, stdout, stderr = SpecCliSupport.run_cli(["get", "--first", "--order", "query", gz_path, "dup", "other"])
+      status.should eq(0)
+      stdout.should eq(records[0] + records[1])
+      stderr.should be_empty
+
+      status, stdout, stderr = SpecCliSupport.run_cli(["get", "--unique", gz_path, "dup"])
+      status.should eq(2)
+      stdout.should be_empty
+      stderr.should contain("not unique: dup")
+    ensure
+      File.delete(index_path) if index_path && File.exists?(index_path)
+      File.delete(list_path) if list_path && File.exists?(list_path)
     end
   end
 

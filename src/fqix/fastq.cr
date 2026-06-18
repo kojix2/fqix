@@ -9,7 +9,7 @@ module Fqix
       NEWLINE = '\n'.ord.to_u8
 
       def initialize(@on_line : Proc(Bytes, Int32, UInt64, Nil),
-                     @on_record : Proc(UInt64, Bool))
+                     @on_record : Proc(UInt64, UInt64, Bool))
         @offset = 0_u64
         @line_start = 0_u64
         @record_start = 0_u64
@@ -54,7 +54,7 @@ module Fqix
         return true unless @line_in_record == 4
 
         @line_in_record = 0
-        @on_record.call(@record_start)
+        @on_record.call(@record_start, @offset - @record_start)
       end
     end
 
@@ -67,7 +67,7 @@ module Fqix
       index ? name[0, index] : name
     end
 
-    private def first_whitespace_index(s : String) : Int32?
+    def first_whitespace_index(s : String) : Int32?
       s.each_char_with_index do |char, index|
         return index if char.whitespace?
       end
