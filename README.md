@@ -12,7 +12,7 @@ It builds a `.fqix` index so lookup can resume gzip inflation near the requested
 
 ## Installation
 
-Prebuilt binaries are available from [GitHub Releases](https://github.com/kojix2/fqix/releases).
+Prebuilt binaries are available from GitHub Releases.
 
 To build from source:
 
@@ -36,6 +36,14 @@ Build the default index next to a FASTQ file:
 fqix index reads.fastq.gz
 ```
 
+By default, fqix builds a **sparse** index. Sparse indexes are small, but they require read names to be sorted by the index's read-name order. The default order is bytewise `lex`; use `--name-order natural` for names with variable-width numeric fields.
+
+Use **exact** mode when the FASTQ read order is not reliable:
+
+```sh
+fqix index --mode exact reads.fastq.gz
+```
+
 Fetch one or more reads by name. Matching FASTQ records are written to stdout:
 
 ```sh
@@ -46,25 +54,53 @@ Useful variants:
 
 ```sh
 fqix index -o reads.fqix reads.fastq.gz
+fqix index --mode sparse --name-interval 1024 reads.fastq.gz
+fqix index --mode sparse --name-order natural reads.fastq.gz
+fqix index --mode exact reads.fastq.gz
 fqix get -i reads.fqix reads.fastq.gz read_001
+fqix get --scan-limit 16777216 reads.fastq.gz read_001
 fqix get --first reads.fastq.gz duplicate_name
 fqix get --count --list names.txt reads.fastq.gz
 fqix show reads.fastq.gz.fqix
+fqix show --anchors reads.fastq.gz.fqix
 fqix show --entries reads.fastq.gz.fqix
 fqix check reads.fastq.gz
 ```
 
-Checkpoint density can be tuned when needed:
-
-```sh
-fqix index --checkpoint-span 4194304 reads.fastq.gz
-```
-
 Run `fqix --help` or `fqix <command> --help` for the full option list. If any requested read is missing, `fqix get` writes a message to stderr and exits with code `2`.
 
-## FASTQ Assumptions
+## Index modes
 
-`fqix` expects ordinary four-line FASTQ records in a `.fastq.gz` file. Read names do not need to be sorted.
+### Sparse mode
+
+Sparse mode is the v1-compatible small-index strategy.
+
+It stores:
+
+- zran checkpoints for resuming gzip inflation
+- sparse read-name anchors, one every `--name-interval` records
+
+Lookup finds the nearest lower anchor, resumes gzip inflation there, and scans forward until the requested read is found or the scan has moved past it.
+
+Sparse mode is compact, but it requires the FASTQ to be sorted by the stored sparse read-name order. `lex` is bytewise lexicographic; `natural` compares ASCII digit runs numerically, so names like `read9`, `read10`, and `read100` can be indexed in their natural order. If the file is not sorted under the selected order, indexing fails and suggests another order or `--mode exact`.
+
+### Exact mode
+
+Exact mode is the v2 order-independent strategy.
+
+It stores:
+
+- zran checkpoints for resuming gzip inflation
+- one hash-sorted entry for every FASTQ record
+- a read-name string table
+
+Lookup hashes the query, checks hash-matching entries with exact name comparison, resumes gzip inflation from the indexed checkpoint, extracts the indexed record size, and verifies the extracted FASTQ header.
+
+Exact mode is larger than sparse mode, but it works even when read names are unsorted, shuffled, filtered, or concatenated in arbitrary order.
+
+## FASTQ assumptions
+
+fqix expects ordinary four-line FASTQ records in a `.fastq.gz` file:
 
 ```text
 @read_001 optional comment
@@ -75,18 +111,11 @@ IIIIIIII
 
 Multiline sequence or quality fields are not supported. The read name is the text after the header's first `@` up to the first space or tab. Query names are bare read names; a leading `@` in the query is treated as part of the name.
 
-## How It Works
-
-A `.fqix` index stores:
-
-- [zran](https://github.com/madler/zlib/blob/develop/examples/zran.h)-style checkpoints for resuming gzip inflation
-- one hash-sorted entry for every FASTQ record, plus a read-name string table
-
-`fqix get` hashes the query name, checks hash-matching entries with an exact name comparison, resumes from the nearest gzip checkpoint, and extracts the indexed record size.
-
 ## Limitations
 
 - Multiline FASTQ is not supported.
+- Sparse mode requires read names sorted by the selected `--name-order`.
+- Exact mode can create large indexes because it stores one entry per FASTQ record plus read-name bytes.
 - `fqix check` compares source file size and second-resolution mtime.
 - Parallel lookup is not implemented.
 
@@ -100,8 +129,10 @@ make test
 
 Tests link Mark Adler's zran example as a reference implementation, so a C compiler is required.
 
+See `PLAN_V3.md` for the dual-mode design and future exact-index compaction plan.
+
 ## License
 
 fqix is licensed under the MIT License.
 
-The files under `spec/support/` and the implementation in `src/fqix/zran.cr` are based on Mark Adler's [zran](https://github.com/madler/zlib/tree/develop/examples) from [zlib](https://github.com/madler/zlib), and are distributed under the [zlib License](https://github.com/madler/zlib/blob/develop/LICENSE).
+The files under `spec/support/` and the implementation in `src/fqix/zran.cr` are based on Mark Adler's zran example from zlib, and are distributed under the zlib License.

@@ -1,10 +1,33 @@
 require "./error"
 require "./fastq"
 require "./index_format"
+require "./order"
 require "./window_store"
 require "./zran"
 
 module Fqix
+  enum IndexMode : UInt8
+    Sparse = 1
+    Exact  = 2
+  end
+
+  # On-disk format version, split into two orthogonal axes so each index kind
+  # can evolve on its own. `major` is the index kind (1 = sparse, 2 = exact),
+  # `minor` is a revision within that kind. Stored as two little-endian u16
+  # fields, which is byte-compatible with the older single u32 version: the
+  # released exact value `2` decodes as `2.0`, sparse `1` as `1.0`.
+  struct FormatVersion
+    getter major : UInt16
+    getter minor : UInt16
+
+    def initialize(@major : UInt16, @minor : UInt16)
+    end
+
+    def to_s(io : IO) : Nil
+      io << major << '.' << minor
+    end
+  end
+
   enum HashAlgorithm : UInt8
     Fnv1a64  =   1
     TestZero = 255
@@ -14,6 +37,21 @@ module Fqix
     FirstToken = 1
   end
 
+  # Sparse v1 anchor entry. A sparse index stores only every Nth read name,
+  # then scans forward from the nearest lower anchor. It is compact but requires
+  # the input FASTQ to be sorted by the same order used by Fqix::Order.
+  struct NameEntry
+    getter name : String
+    getter uncompressed_offset : UInt64
+    getter checkpoint_id : UInt64
+    getter delta : UInt64
+
+    def initialize(@name : String, @uncompressed_offset : UInt64, @checkpoint_id : UInt64, @delta : UInt64)
+    end
+  end
+
+  # Exact v2 entry. An exact index stores one entry for every FASTQ record,
+  # sorted by read-name hash, and never relies on FASTQ body order.
   struct Entry
     getter name_hash : UInt64
     getter name_offset : UInt64
@@ -74,10 +112,58 @@ module Fqix
     end
   end
 
-  # Records every FASTQ record while gzip is inflated once for the zran
-  # checkpoint pass. Decompressed bytes can be split anywhere, so only header
-  # bytes and record offsets/sizes are retained.
-  class EntryBuilder
+  # Builds the sparse v1 read-name anchor list while gzip is inflated once for
+  # the zran checkpoint pass.
+  class SparseNameTableBuilder
+    record Anchor, name : String, offset : UInt64
+
+    getter anchors : Array(Anchor)
+    getter record_count = 0_u64
+
+    def initialize(@name_interval : UInt32, @order_mode : OrderMode)
+      @anchors = [] of Anchor
+      @record_index = 0_u64
+      @last_name = nil.as(String?)
+      @header = IO::Memory.new
+      @framer = Fastq::StreamParser.new(
+        ->(segment : Bytes, line_in_record : Int32, _line_start : UInt64) {
+          @header.write(segment) if line_in_record == 0
+        },
+        ->(record_start : UInt64, _record_size : UInt64) {
+          complete_record(Fastq.name_from_header(@header.to_s), record_start)
+          @header.clear
+          true
+        }
+      )
+    end
+
+    def feed(chunk : Bytes) : Nil
+      @framer.feed(chunk)
+    end
+
+    def finish : Nil
+      @framer.finish
+    end
+
+    private def complete_record(name : String, record_start : UInt64) : Nil
+      if last = @last_name
+        if Order.compare(name, last, @order_mode) < 0
+          raise Error.new("FASTQ is not sorted under --name-order #{Index.order_mode_label(@order_mode)} near #{name.inspect} < #{last.inspect}; try --name-order lex, sort the file, or use --mode exact")
+        end
+      end
+      @last_name = name
+
+      if @record_index == 0 || @record_index % @name_interval == 0
+        @anchors << Anchor.new(name, record_start)
+      end
+      @record_index += 1
+      @record_count = @record_index
+    end
+  end
+
+  # Records every FASTQ record for exact v2 mode. Decompressed bytes can be split
+  # anywhere, so only header bytes and record offsets/sizes are retained.
+  class ExactEntryBuilder
     getter records : Array(RawEntry)
     getter? input_names_sorted = true
 
@@ -85,7 +171,7 @@ module Fqix
       @records = [] of RawEntry
       @record_index = 0_u64
       @last_name = nil.as(String?)
-      @header = IO::Memory.new # bytes of the current header line (line 0 only)
+      @header = IO::Memory.new
       @framer = Fastq::StreamParser.new(
         ->(segment : Bytes, line_in_record : Int32, _line_start : UInt64) {
           @header.write(segment) if line_in_record == 0
@@ -108,7 +194,7 @@ module Fqix
 
     private def complete_record(name : String, record_start : UInt64, record_size : UInt64) : Nil
       if last = @last_name
-        @input_names_sorted = false if name < last
+        @input_names_sorted = false if Order.lexicographic_compare(name, last) < 0
       end
       @last_name = name
 
@@ -118,27 +204,56 @@ module Fqix
   end
 
   class Index
-    MAGIC                   = IndexFormat::MAGIC
-    VERSION                 = IndexFormat::VERSION
+    MAGIC                   = IndexFormat::MAGIC_V2
+    VERSION                 = IndexFormat::EXACT_VERSION
     DEFAULT_CHECKPOINT_SPAN = 4_u64 * 1024_u64 * 1024_u64
+    DEFAULT_NAME_INTERVAL   = 1024_u32
+    DEFAULT_MODE            = IndexMode::Sparse
     DEFAULT_HASH_ALGORITHM  = HashAlgorithm::Fnv1a64
     DEFAULT_HASH_SEED       = 0_u64
     DEFAULT_NAME_MODE       = NameMode::FirstToken
+    DEFAULT_ORDER_MODE      = OrderMode::Lexicographic
 
-    getter format_version : UInt32
+    getter format_version : FormatVersion
     property source_path : String
     property source_size : UInt64
     property source_mtime : Int64
     property checkpoint_span : UInt64
+    property mode : IndexMode
+    property name_interval : UInt32
+    property order_mode : OrderMode
     property hash_algorithm : HashAlgorithm
     property hash_seed : UInt64
     property name_mode : NameMode
     property record_count : UInt64
     property? input_names_sorted : Bool
     getter checkpoint_metas : Array(CheckpointMeta)
+    getter names : Array(NameEntry)
     getter entries : Array(Entry)
     getter name_table : Bytes
 
+    def initialize(@source_path : String,
+                   @source_size : UInt64,
+                   @source_mtime : Int64,
+                   @checkpoint_span : UInt64,
+                   @mode : IndexMode,
+                   @name_interval : UInt32,
+                   @order_mode : OrderMode,
+                   @hash_algorithm : HashAlgorithm,
+                   @hash_seed : UInt64,
+                   @name_mode : NameMode,
+                   @record_count : UInt64,
+                   @input_names_sorted : Bool,
+                   @checkpoint_metas : Array(CheckpointMeta),
+                   @names : Array(NameEntry),
+                   @entries : Array(Entry),
+                   @name_table : Bytes,
+                   @window_store : WindowStore,
+                   @format_version : FormatVersion = VERSION)
+    end
+
+    # Compatibility constructor for tests and callers that directly build an
+    # exact v2 index object.
     def initialize(@source_path : String,
                    @source_size : UInt64,
                    @source_mtime : Int64,
@@ -152,7 +267,11 @@ module Fqix
                    @entries : Array(Entry),
                    @name_table : Bytes,
                    @window_store : WindowStore,
-                   @format_version : UInt32 = VERSION)
+                   @format_version : FormatVersion = VERSION)
+      @mode = IndexMode::Exact
+      @name_interval = 0_u32
+      @order_mode = DEFAULT_ORDER_MODE
+      @names = [] of NameEntry
     end
 
     def self.default_path(gz_path : String) : String
@@ -160,14 +279,69 @@ module Fqix
     end
 
     def self.build(gz_path : String,
-                   checkpoint_span : UInt64 = DEFAULT_CHECKPOINT_SPAN) : Index
+                   checkpoint_span : UInt64 = DEFAULT_CHECKPOINT_SPAN,
+                   mode : IndexMode = DEFAULT_MODE,
+                   name_interval : UInt32 = DEFAULT_NAME_INTERVAL,
+                   order_mode : OrderMode = DEFAULT_ORDER_MODE) : Index
+      raise Error.new("checkpoint span must be greater than zero") if checkpoint_span == 0
+
+      case mode
+      in .sparse?
+        build_sparse(gz_path, checkpoint_span, name_interval, order_mode)
+      in .exact?
+        build_exact(gz_path, checkpoint_span)
+      end
+    end
+
+    def self.build_sparse(gz_path : String,
+                          checkpoint_span : UInt64 = DEFAULT_CHECKPOINT_SPAN,
+                          name_interval : UInt32 = DEFAULT_NAME_INTERVAL,
+                          order_mode : OrderMode = DEFAULT_ORDER_MODE) : Index
+      raise Error.new("name interval must be greater than zero") if name_interval == 0
       raise Error.new("checkpoint span must be greater than zero") if checkpoint_span == 0
 
       info = File.info(gz_path)
+      builder = SparseNameTableBuilder.new(name_interval, order_mode)
+      tmp = build_zran_temp(gz_path, checkpoint_span, builder)
+      begin
+        checkpoints = Zran.read_temp(tmp)
+      ensure
+        File.delete(tmp) if File.exists?(tmp)
+      end
+      builder.finish
 
-      builder = EntryBuilder.new
-      consumer = ->(chunk : Bytes) { builder.feed(chunk) }
-      tmp = Zran.build_to_temp(gz_path, checkpoint_span, consumer)
+      checkpoint_metas = checkpoints.map { |checkpoint| CheckpointMeta.from_checkpoint(checkpoint) }
+      windows = checkpoints.map(&.window)
+      names = build_name_table(checkpoint_metas, builder.anchors)
+      new(
+        gz_path,
+        info.size.to_u64,
+        info.modification_time.to_unix,
+        checkpoint_span,
+        IndexMode::Sparse,
+        name_interval,
+        order_mode,
+        DEFAULT_HASH_ALGORITHM,
+        DEFAULT_HASH_SEED,
+        DEFAULT_NAME_MODE,
+        builder.record_count,
+        true,
+        checkpoint_metas,
+        names,
+        [] of Entry,
+        Bytes.empty,
+        MemoryWindowStore.new(windows),
+        IndexFormat::SPARSE_VERSION
+      )
+    end
+
+    def self.build_exact(gz_path : String,
+                         checkpoint_span : UInt64 = DEFAULT_CHECKPOINT_SPAN) : Index
+      raise Error.new("checkpoint span must be greater than zero") if checkpoint_span == 0
+
+      info = File.info(gz_path)
+      builder = ExactEntryBuilder.new
+      tmp = build_zran_temp(gz_path, checkpoint_span, builder)
       begin
         checkpoints = Zran.read_temp(tmp)
       ensure
@@ -183,16 +357,35 @@ module Fqix
         info.size.to_u64,
         info.modification_time.to_unix,
         checkpoint_span,
+        IndexMode::Exact,
+        0_u32,
+        DEFAULT_ORDER_MODE,
         DEFAULT_HASH_ALGORITHM,
         DEFAULT_HASH_SEED,
         DEFAULT_NAME_MODE,
         builder.records.size.to_u64,
         builder.input_names_sorted?,
         checkpoint_metas,
+        [] of NameEntry,
         entries,
         name_table,
-        MemoryWindowStore.new(windows)
+        MemoryWindowStore.new(windows),
+        IndexFormat::EXACT_VERSION
       )
+    end
+
+    private def self.build_zran_temp(gz_path : String, checkpoint_span : UInt64, builder) : String
+      consumer = ->(chunk : Bytes) { builder.feed(chunk) }
+      Zran.build_to_temp(gz_path, checkpoint_span, consumer)
+    end
+
+    def self.build_name_table(checkpoints : Array(CheckpointMeta),
+                              anchors : Array(SparseNameTableBuilder::Anchor)) : Array(NameEntry)
+      anchors.map do |anchor|
+        cp_id = checkpoint_for(checkpoints, anchor.offset)
+        cp = checkpoints[cp_id]
+        NameEntry.new(anchor.name, anchor.offset, cp_id.to_u64, anchor.offset - cp.out_offset)
+      end
     end
 
     def self.build_entries(records : Array(RawEntry),
@@ -221,16 +414,7 @@ module Fqix
     end
 
     def self.checkpoint_for(checkpoints : Array(CheckpointMeta), out_offset : UInt64) : Int32
-      lo = 0
-      hi = checkpoints.size
-      while lo < hi
-        mid = (lo + hi) // 2
-        if checkpoints[mid].out_offset <= out_offset
-          lo = mid + 1
-        else
-          hi = mid
-        end
-      end
+      lo = lower_bound(checkpoints.size) { |index| checkpoints[index].out_offset <= out_offset }
       idx = lo - 1
       idx < 0 ? 0 : idx
     end
@@ -257,6 +441,27 @@ module Fqix
       info.size.to_u64 != source_size || info.modification_time.to_unix != source_mtime
     end
 
+    def sparse? : Bool
+      mode.sparse?
+    end
+
+    def exact? : Bool
+      mode.exact?
+    end
+
+    def self.order_mode_label(mode : OrderMode) : String
+      case mode
+      in .lexicographic?
+        "lex"
+      in .natural?
+        "natural"
+      end
+    end
+
+    def order_mode_label : String
+      Index.order_mode_label(order_mode)
+    end
+
     def normalize_query(query : String) : String
       case name_mode
       in .first_token?
@@ -266,6 +471,7 @@ module Fqix
     end
 
     def find_entries(query : String) : Array(Entry)
+      raise Error.new("index mode is not exact") unless exact?
       return [] of Entry if entries.empty?
       normalized = normalize_query(query)
       hash = NameHash.hash(normalized, hash_algorithm, hash_seed)
@@ -289,12 +495,28 @@ module Fqix
       String.new(name_table[offset.to_i, length.to_i])
     end
 
+    # Returns the anchor to start scanning from for `query`: the last anchor
+    # ordering strictly before `query`. The first FASTQ record is always an
+    # anchor, so index 0 is a safe lower bound.
+    def find_floor_name(query : String, normalized : Bool = false) : NameEntry?
+      raise Error.new("index mode is not sparse") unless sparse?
+      return if names.empty?
+      normalized_query = normalized ? query : normalize_query(query)
+      lo = Index.lower_bound(names.size) { |index| Order.compare(names[index].name, normalized_query, order_mode) < 0 }
+      idx = lo - 1
+      names[idx < 0 ? 0 : idx]
+    end
+
     private def lower_bound_hash(hash : UInt64) : Int32
+      Index.lower_bound(entries.size) { |index| entries[index].name_hash < hash }
+    end
+
+    def self.lower_bound(size : Int32, &before_target : Int32 -> Bool) : Int32
       lo = 0
-      hi = entries.size
+      hi = size
       while lo < hi
         mid = (lo + hi) // 2
-        if entries[mid].name_hash < hash
+        if before_target.call(mid)
           lo = mid + 1
         else
           hi = mid

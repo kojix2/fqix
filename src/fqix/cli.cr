@@ -32,6 +32,12 @@ module Fqix
       property output : String?
       property index_path : String?
       property checkpoint_span = Index::DEFAULT_CHECKPOINT_SPAN
+      property index_mode = Index::DEFAULT_MODE
+      property name_interval = Index::DEFAULT_NAME_INTERVAL
+      property? name_interval_set = false
+      property name_order = Index::DEFAULT_ORDER_MODE
+      property? name_order_set = false
+      property scan_bytes = Reader::DEFAULT_SCAN_BYTES
       property list_path : String?
       property get_order = GetOrder::Input
       property? raw = false
@@ -85,7 +91,7 @@ module Fqix
     private def build_parser(opt : Options) : CommandParser
       CommandParser.new do |parser|
         parser.banner = main_banner
-        parser.summary_width = 32
+        parser.summary_width = 28
         parser.summary_indent = "  "
 
         parser.on("index", "Build an index") do
@@ -134,6 +140,9 @@ module Fqix
       )
       parser.on("-o", "--output FILE", "FQIX index path [reads.fastq.gz.fqix]") { |v| opt.output = v }
       parser.on("-c", "--checkpoint-span BYTES", "Uncompressed bytes between zran checkpoints [4194304]") { |v| opt.checkpoint_span = parse_u64(v, "checkpoint span") }
+      parser.on("-m", "--mode MODE", "Index mode: sparse or exact [sparse]") { |v| opt.index_mode = parse_index_mode(v) }
+      parser.on("-n", "--name-interval N", "Sparse anchor interval [1024]") { |v| opt.name_interval = parse_u32(v, "name interval"); opt.name_interval_set = true }
+      parser.on("--name-order ORDER", "Sparse read-name order: lex or natural [lex]") { |v| opt.name_order = parse_name_order(v); opt.name_order_set = true }
       parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
     end
@@ -150,6 +159,7 @@ module Fqix
         ]
       )
       parser.on("-i", "--index FILE", "FQIX index path [reads.fastq.gz.fqix]") { |v| opt.index_path = v }
+      parser.on("-s", "--scan-limit BYTES", "Sparse mode forward-scan byte limit [16777216]") { |v| opt.scan_bytes = parse_u64(v, "scan limit") }
       parser.on("--first", "Return only the first matching record for each name") { opt.first = true; opt.all = false }
       parser.on("--count", "Print match counts instead of FASTQ records") { opt.count = true }
       parser.on("--all", "Return all matching records [default]") { opt.all = true; opt.first = false }
@@ -170,7 +180,8 @@ module Fqix
           {"index.fqix", "Input FQIX index file"},
         ]
       )
-      parser.on("--entries", "Print hash-sorted entries") { opt.raw = true }
+      parser.on("--entries", "Print raw mode-specific lookup entries") { opt.raw = true }
+      parser.on("--anchors", "Alias for --entries") { opt.raw = true }
       parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
     end
@@ -194,7 +205,9 @@ module Fqix
       gz = args.shift? || return print_required_args_error(opt)
       raise Error.new("too many arguments") unless args.empty?
 
-      index = Index.build(gz, opt.checkpoint_span)
+      @err.puts "fqix: warning: --name-interval is ignored with --mode exact" if opt.index_mode.exact? && opt.name_interval_set?
+      @err.puts "fqix: warning: --name-order is ignored with --mode exact" if opt.index_mode.exact? && opt.name_order_set?
+      index = Index.build(gz, checkpoint_span: opt.checkpoint_span, mode: opt.index_mode, name_interval: opt.name_interval, order_mode: opt.name_order)
       out_path = opt.output || Index.default_path(gz)
       index.write(out_path)
       @err.puts "wrote #{out_path}"
@@ -218,7 +231,12 @@ module Fqix
       found_names = 0
       matches = [] of Tuple(UInt64, String)
       names.each do |name|
-        records = reader.fetch_matches(name)
+        result = reader.fetch_matches_with_status(name, opt.scan_bytes)
+        records = result.matches
+        if result.status.scan_limit_reached?
+          @err.puts "fqix: scan limit reached before lookup completed: #{name}"
+          next
+        end
         if records.empty?
           @err.puts "fqix: not found: #{name}"
         else
@@ -257,27 +275,43 @@ module Fqix
 
       idx = Index.read(path)
       if opt.raw?
-        idx.entries.each do |entry|
-          @out.puts [
-            idx.entry_name(entry),
-            entry.name_hash,
-            entry.record_number,
-            entry.record_offset,
-            entry.record_size,
-          ].join('\t')
+        case idx.mode
+        in .sparse?
+          idx.names.each do |entry|
+            @out.puts [
+              entry.name,
+              entry.uncompressed_offset,
+              entry.checkpoint_id,
+              entry.delta,
+            ].join('\t')
+          end
+        in .exact?
+          idx.entries.each do |entry|
+            @out.puts [
+              idx.entry_name(entry),
+              entry.name_hash,
+              entry.record_number,
+              entry.record_offset,
+              entry.record_size,
+            ].join('\t')
+          end
         end
       else
         @out.puts "version\t#{idx.format_version}"
+        @out.puts "mode\t#{idx.mode}"
         @out.puts "source_size\t#{idx.source_size}"
         @out.puts "source_mtime\t#{idx.source_mtime}"
         @out.puts "checkpoint_span\t#{idx.checkpoint_span}"
-        @out.puts "hash_algorithm\t#{idx.hash_algorithm}"
-        @out.puts "hash_seed\t#{idx.hash_seed}"
+        @out.puts "name_interval\t#{idx.name_interval}" if idx.sparse?
+        @out.puts "order_mode\t#{idx.order_mode_label}" if idx.sparse?
+        @out.puts "hash_algorithm\t#{idx.hash_algorithm}" if idx.exact?
+        @out.puts "hash_seed\t#{idx.hash_seed}" if idx.exact?
         @out.puts "name_mode\t#{idx.name_mode}"
-        @out.puts "record_count\t#{idx.record_count}"
+        @out.puts "record_count\t#{idx.record_count}" if idx.record_count > 0
         @out.puts "input_names_sorted\t#{idx.input_names_sorted?}"
         @out.puts "checkpoints\t#{idx.checkpoint_metas.size}"
-        @out.puts "entries\t#{idx.entries.size}"
+        @out.puts "anchors\t#{idx.names.size}" if idx.sparse?
+        @out.puts "entries\t#{idx.entries.size}" if idx.exact?
       end
       0
     end
@@ -351,6 +385,22 @@ module Fqix
       s.to_u64? || raise Error.new("invalid #{label}: #{s}")
     end
 
+    private def parse_u32(s : String, label : String) : UInt32
+      value = s.to_u32? || raise Error.new("invalid #{label}: #{s}")
+      value
+    end
+
+    private def parse_index_mode(s : String) : IndexMode
+      case s
+      when "sparse"
+        IndexMode::Sparse
+      when "exact"
+        IndexMode::Exact
+      else
+        raise Error.new("invalid index mode: #{s}")
+      end
+    end
+
     private def parse_get_order(s : String) : GetOrder
       case s
       when "query"
@@ -359,6 +409,17 @@ module Fqix
         GetOrder::Input
       else
         raise Error.new("invalid output order: #{s}")
+      end
+    end
+
+    private def parse_name_order(s : String) : OrderMode
+      case s
+      when "lex"
+        OrderMode::Lexicographic
+      when "natural"
+        OrderMode::Natural
+      else
+        raise Error.new("invalid name order: #{s}")
       end
     end
   end

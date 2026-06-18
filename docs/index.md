@@ -1,14 +1,15 @@
 # fqix
 
-`fqix` is an experimental FASTQ read-name index for ordinary `.fastq.gz`
-files.
+`fqix` is an experimental FASTQ read-name index for ordinary `.fastq.gz` files.
+It combines zran-style gzip restart checkpoints with a read-name lookup table.
 
-It does not require read-name sorted input or re-compressing with bgzip.
+fqix now has two explicit index modes:
 
-The index combines zran-style gzip restart checkpoints with one hash-sorted
-entry per FASTQ record. Lookup hashes the query, verifies matching names exactly,
-resumes gzip inflation from the nearest checkpoint, and extracts the indexed
-record.
+- **sparse**: small v1-style anchor index; requires sorted read names.
+- **exact**: larger v2-style full hash index; works without any read-name order assumption.
+
+The default is `sparse` to avoid accidentally creating very large exact indexes.
+Use `--mode exact` when the FASTQ order has been shuffled, filtered, merged, or is otherwise unreliable.
 
 ## Links
 
@@ -28,19 +29,15 @@ This is a minimal prototype.
 
 Known limitations:
 
-- FASTQ records must use the standard four-line layout; wrapped multiline
-  sequence or quality fields are not supported.
-- Some gzip files may have sparse deflate block boundaries, so zran checkpoints
-  may be farther apart than requested.
-- `fqix check` compares the source file size and second-resolution modification
-  time. Rewrites that keep the same size within the same second may not be
-  reported as stale.
+- FASTQ records must use the standard four-line layout; wrapped multiline sequence or quality fields are not supported.
+- Sparse mode requires sorted read names.
+- Exact mode can produce large indexes because it stores one entry per FASTQ record.
+- Some gzip files may have sparse deflate block boundaries, so zran checkpoints may be farther apart than requested.
+- `fqix check` compares source file size and second-resolution modification time.
 - Parallel lookup is not implemented yet.
 
 ## License
 
 fqix is licensed under the MIT License.
 
-The files under `spec/support/` and the implementation in `src/fqix/zran.cr`
-are based on Mark Adler's zran from zlib, and are distributed under the zlib
-License.
+The files under `spec/support/` and the implementation in `src/fqix/zran.cr` are based on Mark Adler's zran from zlib, and are distributed under the zlib License.

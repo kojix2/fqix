@@ -1,35 +1,54 @@
 # How It Works
 
-`fqix` builds a hash-based read-name index for ordinary `.fastq.gz` files without
-recompressing them.
+fqix indexes ordinary `.fastq.gz` files without recompressing them. Both modes reuse zran-style gzip restart checkpoints; they differ only in the read-name lookup table.
 
-## Indexing
+| | Sparse (v1) | Exact (v2) |
+| --- | --- | --- |
+| Index size | Small (one anchor per `--name-interval` reads) | Large (one entry per read) |
+| Read-name order | Must be sorted by the stored `order_mode` | Any order |
+| Lookup | Resume at nearest anchor, scan forward | Hash, then jump straight to the record |
+| Default | Yes | `--mode exact` |
 
-`fqix index` reads the FASTQ file once and records two kinds of positions:
+## Sparse mode
 
-- zran-style gzip restart checkpoints, used to resume inflation near a target
-  region
-- one entry for every FASTQ record, sorted by read-name hash and record number
+Sparse mode is the v1-compatible strategy.
 
-Each entry stores the normalized name location, record number, uncompressed
-record offset, and record size. The input FASTQ order is preserved through
-`record_number`; it is not required to be sorted by read name.
+During indexing, fqix reads the FASTQ once and records:
 
-## Lookup
+- gzip restart checkpoints
+- the first read-name anchor
+- every `--name-interval`-th read-name anchor
 
-`fqix get` hashes the query name, binary-searches the matching hash range,
-checks candidate names with an exact byte comparison, resumes gzip inflation from
-the closest checkpoint before the record offset, and extracts the indexed record
-size. The extracted header is normalized again and checked against the query.
+Sparse mode checks that read names are sorted by the selected `--name-order`. The default `lex` mode is bytewise lexicographic; `natural` compares ASCII digit runs by numeric value without integer conversion. If a later read orders before an earlier read, indexing stops and suggests another order or `--mode exact`.
+
+Lookup binary-searches the anchor table for the nearest lower name, resumes gzip inflation at that anchor, then scans forward. Because matching records sit together in sorted order, the scan collects every record with the target name, stopping once it moves past the name or reaches `--scan-limit`.
+
+## Exact mode
+
+Exact mode is the v2 order-independent strategy.
+
+During indexing, fqix reads the FASTQ once and records one entry per FASTQ record:
+
+- normalized read name
+- name hash
+- FASTQ appearance number
+- uncompressed record offset
+- record byte size
+
+Entries are sorted by `(name_hash, record_number)`. Lookup hashes the query name, binary-searches the matching hash range, checks candidate names with an exact byte comparison, resumes gzip inflation from the closest checkpoint before the record offset, and extracts the indexed record size. The extracted header is normalized again and checked against the query.
+
+The hash is only an accelerator. Hash collisions are safe because exact mode verifies the actual read name before returning a record.
 
 ## Tuning
 
-`--checkpoint-span` controls the target spacing between gzip restart
-checkpoints in uncompressed bytes. The actual spacing depends on deflate block
-boundaries in the source gzip stream.
+`--checkpoint-span` controls the target spacing between gzip restart checkpoints in uncompressed bytes. Actual spacing depends on deflate block boundaries in the source gzip stream.
 
-## Freshness Check
+`--name-interval` controls sparse-index density. Smaller values make sparse lookup scan less but increase the index size.
 
-`fqix check` compares the source file size and second-resolution modification
-time stored in the index. If either value differs, the index is reported as
-stale.
+`--name-order` controls the sparse read-name comparator and is stored in the index. Lookup reads the stored mode, so `fqix get` has no name-order option.
+
+`--scan-limit` controls how far sparse lookup is allowed to scan after an anchor. Exact mode does not need it because each exact entry stores the target record size.
+
+## Freshness check
+
+`fqix check` compares the source file size and second-resolution modification time stored in the index. If either value differs, the index is reported as stale.
