@@ -237,6 +237,7 @@ module Fqix
       nnames.times do
         names << read_name_entry(io, windows_offset)
       end
+      validate_sparse_name_entries!(names, checkpoint_metas)
 
       if io.pos.to_u64 != windows_offset
         raise Error.new("invalid fqix index window offset")
@@ -409,6 +410,22 @@ module Fqix
       window_size = Zran::WINDOW_SIZE.to_u64
       if ncheckpoints > MAX_ARRAY_SIZE || ncheckpoints > bytes_available // window_size
         raise Error.new("invalid fqix index window section")
+      end
+    end
+
+    private def validate_sparse_name_entries!(names : Array(NameEntry), checkpoint_metas : Array(CheckpointMeta)) : Nil
+      names.each do |entry|
+        if entry.checkpoint_id >= checkpoint_metas.size.to_u64
+          raise Error.new("invalid fqix sparse name checkpoint reference")
+        end
+
+        checkpoint = checkpoint_metas[entry.checkpoint_id.to_i]
+        if entry.uncompressed_offset < checkpoint.out_offset
+          raise Error.new("invalid fqix sparse name checkpoint reference")
+        end
+        if entry.delta != entry.uncompressed_offset - checkpoint.out_offset
+          raise Error.new("invalid fqix sparse name checkpoint reference")
+        end
       end
     end
 

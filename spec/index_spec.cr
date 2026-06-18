@@ -258,6 +258,54 @@ describe Fqix::Index do
       end
     end
 
+    it "rejects a sparse name entry with an out-of-range checkpoint id" do
+      index_path = File.tempname("fqix-bad-sparse-checkpoint-id-spec", ".fqix")
+      checkpoints = [Fqix::CheckpointMeta.new(100_u64, 0_u64, 0_u8, 0_u32)]
+      names = [Fqix::NameEntry.new("read1", 100_u64, 1_u64, 0_u64)]
+
+      begin
+        SpecIndexSupport.write_sparse_v1_index(index_path, "reads.fastq.gz", checkpoints, names, [Bytes.new(Fqix::Zran::WINDOW_SIZE)])
+
+        expect_raises(Fqix::Error, "invalid fqix sparse name checkpoint reference") do
+          Fqix::Index.read(index_path)
+        end
+      ensure
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
+    it "rejects a sparse name entry whose offset precedes its checkpoint" do
+      index_path = File.tempname("fqix-bad-sparse-offset-spec", ".fqix")
+      checkpoints = [Fqix::CheckpointMeta.new(100_u64, 0_u64, 0_u8, 0_u32)]
+      names = [Fqix::NameEntry.new("read1", 99_u64, 0_u64, 0_u64)]
+
+      begin
+        SpecIndexSupport.write_sparse_v1_index(index_path, "reads.fastq.gz", checkpoints, names, [Bytes.new(Fqix::Zran::WINDOW_SIZE)])
+
+        expect_raises(Fqix::Error, "invalid fqix sparse name checkpoint reference") do
+          Fqix::Index.read(index_path)
+        end
+      ensure
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
+    it "rejects a sparse name entry whose delta disagrees with its checkpoint" do
+      index_path = File.tempname("fqix-bad-sparse-delta-spec", ".fqix")
+      checkpoints = [Fqix::CheckpointMeta.new(100_u64, 0_u64, 0_u8, 0_u32)]
+      names = [Fqix::NameEntry.new("read1", 120_u64, 0_u64, 19_u64)]
+
+      begin
+        SpecIndexSupport.write_sparse_v1_index(index_path, "reads.fastq.gz", checkpoints, names, [Bytes.new(Fqix::Zran::WINDOW_SIZE)])
+
+        expect_raises(Fqix::Error, "invalid fqix sparse name checkpoint reference") do
+          Fqix::Index.read(index_path)
+        end
+      ensure
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
     it "rejects a corrupt index with an impossible entry count" do
       index_path = File.tempname("fqix-bad-name-count-spec", ".fqix")
 
