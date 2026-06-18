@@ -1,6 +1,6 @@
 # FQIX File Format
 
-This document describes the current `.fqix` on-disk format, version 3.
+This document describes the current `.fqix` on-disk format, version 1.
 
 The format is little-endian. Integers are unsigned unless noted otherwise.
 Strings are stored as raw UTF-8 bytes without a trailing NUL.
@@ -24,7 +24,7 @@ The header is 72 bytes.
 | Offset | Size | Type | Field | Meaning |
 | ---: | ---: | --- | --- | --- |
 | 0 | 8 | bytes | magic | `FQIX\x01\0\0\0` |
-| 8 | 4 | u32 | version | Currently `3` |
+| 8 | 4 | u32 | version | Currently `1` |
 | 12 | 2 | u16 | flags | Reserved, must be `0` |
 | 14 | 2 | u16 | padding | Reserved, must be `0` |
 | 16 | 8 | u64 | source_size | Source `.fastq.gz` size in bytes |
@@ -88,7 +88,7 @@ checkpoint.
 
 ## Compatibility Notes
 
-- Version 3 indexes store windows after the name table and load them lazily.
-- Older index versions are rejected; rebuild the index with the current `fqix`.
+- Version 1 indexes store windows after the name table and load them lazily.
+- Unknown index versions are rejected; rebuild the index with the current `fqix`.
 - The format is tied to ordinary gzip streams and zran-style restart points, not
   BGZF blocks.

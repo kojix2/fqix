@@ -7,8 +7,8 @@ module Fqix
     extend self
 
     MAGIC                = "FQIX\u{1}\0\0\0"
-    VERSION              =  3_u32
-    V3_HEADER_SIZE       = 72_u64
+    VERSION              =  1_u32
+    HEADER_SIZE          = 72_u64
     CHECKPOINT_META_SIZE = 21_u64
     MIN_NAME_ENTRY_SIZE  = 26_u64
     MAX_ARRAY_SIZE       = Int32::MAX.to_u64
@@ -20,7 +20,7 @@ module Fqix
           raise Error.new("source path too long for index: #{index.source_path}")
         end
 
-        windows_offset = V3_HEADER_SIZE +
+        windows_offset = HEADER_SIZE +
                          source_path_bytes.size.to_u64 +
                          index.checkpoint_metas.size.to_u64 * CHECKPOINT_META_SIZE +
                          name_table_size(index.names)
@@ -83,10 +83,10 @@ module Fqix
         windows_offset = BinaryIO.read_u64(io)
 
         file_size = File.size(path).to_u64
-        if windows_offset > file_size || windows_offset < V3_HEADER_SIZE
+        if windows_offset > file_size || windows_offset < HEADER_SIZE
           raise Error.new("invalid fqix index window offset")
         end
-        if source_path_len.to_u64 > windows_offset - V3_HEADER_SIZE
+        if source_path_len.to_u64 > windows_offset - HEADER_SIZE
           raise Error.new("invalid fqix index source path length")
         end
 

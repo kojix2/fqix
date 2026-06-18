@@ -26,7 +26,7 @@ module SpecIndexSupport
                          source_path_len : UInt32 = 0_u32,
                          ncheckpoints : UInt64 = 0_u64,
                          nnames : UInt64 = 0_u64,
-                         windows_offset : UInt64 = Fqix::IndexFormat::V3_HEADER_SIZE,
+                         windows_offset : UInt64 = Fqix::IndexFormat::HEADER_SIZE,
                          flags : UInt16 = 0_u16,
                          padding : UInt16 = 0_u16)
     File.open(path, "wb") do |io|
@@ -88,7 +88,7 @@ describe Fqix::Index do
       end
 
       read_index = Fqix::Index.read(index_path)
-      read_index.format_version.should eq(3)
+      read_index.format_version.should eq(1)
       read_index.source_path.should eq(gz_path)
       read_index.checkpoint_metas.size.should eq(index.checkpoint_metas.size)
       Fqix::Reader.new(gz_path, read_index).fetch("read0400", 64_u64 * 1024_u64).should eq(records[400][1])
@@ -182,7 +182,7 @@ describe Fqix::Index do
     end
   end
 
-  it "loads checkpoint windows lazily from a v3 index" do
+  it "loads checkpoint windows lazily from a v1 index" do
     gz_path = File.tempname("fqix-lazy-window-spec", ".fastq.gz")
     index_path = "#{gz_path}.fqix"
     records = (0...400).map do |i|
@@ -207,7 +207,7 @@ describe Fqix::Index do
       built.write(index_path)
 
       read_index = Fqix::Index.read(index_path)
-      read_index.format_version.should eq(3)
+      read_index.format_version.should eq(1)
       read_index.checkpoint_metas.should eq(built.checkpoint_metas)
 
       built.checkpoint_metas.each_index do |index|
@@ -219,7 +219,7 @@ describe Fqix::Index do
     end
   end
 
-  it "rejects pre-v3 indexes" do
+  it "rejects unsupported future indexes" do
     index_path = File.tempname("fqix-v2-reject-spec", ".fqix")
 
     begin
