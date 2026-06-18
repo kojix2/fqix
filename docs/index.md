@@ -29,7 +29,7 @@ This is a minimal prototype.
 
 Known limitations:
 
-- FASTQ records must use the standard four-line layout; wrapped multiline sequence or quality fields are not supported.
+- FASTQ records are framed as four lines. Wrapped multiline sequence or quality fields are not supported. fqix does not otherwise validate FASTQ semantics such as `+` line contents or sequence/quality length agreement.
 - Sparse mode requires sorted read names.
 - Exact mode can produce large indexes because it stores one entry per FASTQ record.
 - Some gzip files may have sparse deflate block boundaries, so zran checkpoints may be farther apart than requested.

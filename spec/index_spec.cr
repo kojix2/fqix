@@ -15,6 +15,24 @@ module SpecIndexSupport
     end
   end
 
+  def parse_fastq_text(text : String) : Array(String)
+    records = [] of String
+    record = IO::Memory.new
+    parser = Fqix::Fastq::StreamParser.new(
+      ->(segment : Bytes, _line_in_record : Int32, _line_start : UInt64) {
+        record.write(segment)
+      },
+      ->(_record_start : UInt64, _record_size : UInt64) {
+        records << record.to_s
+        record.clear
+        true
+      }
+    )
+    parser.feed(text.to_slice)
+    parser.finish
+    records
+  end
+
   def write_index_with_version(path : String, major : UInt16, minor : UInt16 = 0_u16)
     File.open(path, "wb") do |io|
       io.write(Fqix::Index::MAGIC.to_slice)
@@ -208,6 +226,31 @@ describe Fqix::Fastq do
 
   it "parses a FASTQ read name before tab-separated comments" do
     Fqix::Fastq.name_from_header("@read2\tmore comment\n").should eq("read2")
+  end
+
+  it "allows empty read names because fqix is not a FASTQ validator" do
+    Fqix::Fastq.name_from_header("@ comment\n").should eq("")
+  end
+
+  it "frames four-line FASTQ with final newline omitted or CRLF line endings" do
+    SpecIndexSupport.parse_fastq_text("@read1\nACGT\n+\nIIII").should eq(["@read1\nACGT\n+\nIIII"])
+    SpecIndexSupport.parse_fastq_text("@read2\r\nACGT\r\n+\r\nIIII\r\n").should eq(["@read2\r\nACGT\r\n+\r\nIIII\r\n"])
+  end
+
+  it "preserves unusual four-line records instead of validating FASTQ semantics" do
+    records = [
+      "@plus\nACGT\n-\nIIII\n",
+      "@short\nACGT\n+\nIII\n",
+      "@long\nACGT\n+\nIIIII\n",
+    ]
+
+    SpecIndexSupport.parse_fastq_text(records.join).should eq(records)
+  end
+
+  it "still rejects incomplete four-line framing in strict mode" do
+    expect_raises(Fqix::Error, "truncated FASTQ record at end of stream") do
+      SpecIndexSupport.parse_fastq_text("@wrapped\nAC\nGT\n+\nIIII\n")
+    end
   end
 end
 
@@ -696,6 +739,27 @@ describe Fqix::Index do
         reader = Fqix::Reader.new(gz_path, index)
         reader.fetch("@weird").should eq(records[0][1])
         reader.fetch("@@weird").should be_nil
+      ensure
+        File.delete(gz_path) if File.exists?(gz_path)
+      end
+    end
+
+    it "indexes and fetches unusual four-line records without validating FASTQ semantics" do
+      gz_path = File.tempname("fqix-unusual-four-line-spec", ".fastq.gz")
+      records = [
+        {"plus", "@plus\nACGT\n-\nIIII\n"},
+        {"short", "@short\nACGT\n+\nIII\n"},
+        {"long", "@long\nACGT\n+\nIIIII\n"},
+      ]
+
+      begin
+        SpecIndexSupport.write_gzip_member(gz_path, records)
+        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        reader = Fqix::Reader.new(gz_path, index)
+
+        records.each do |name, record|
+          reader.fetch(name).should eq(record)
+        end
       ensure
         File.delete(gz_path) if File.exists?(gz_path)
       end

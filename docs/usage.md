@@ -113,4 +113,4 @@ ACGTACGT
 IIIIIIII
 ```
 
-The read name is parsed from after `@` up to the first space or tab. Wrapped multiline sequence or quality fields are not supported.
+The read name is parsed from after `@` up to the first space or tab. Records are framed as four lines, and wrapped multiline sequence or quality fields are not supported. fqix does not otherwise validate FASTQ semantics such as `+` line contents or sequence/quality length agreement.
