@@ -1,7 +1,8 @@
-require "./binary_io"
 require "./error"
 require "./fastq"
+require "./index_format"
 require "./order"
+require "./window_store"
 require "./zran"
 
 module Fqix
@@ -112,10 +113,8 @@ module Fqix
   end
 
   class Index
-    MAGIC                   = "FQIX\u{1}\0\0\0"
-    VERSION                 =  3_u32
-    V3_HEADER_SIZE          = 72_u64
-    CHECKPOINT_META_SIZE    = 21_u64
+    MAGIC                   = IndexFormat::MAGIC
+    VERSION                 = IndexFormat::VERSION
     DEFAULT_CHECKPOINT_SPAN = 4_u64 * 1024_u64 * 1024_u64
     DEFAULT_NAME_INTERVAL   = 1024_u32
 
@@ -135,12 +134,8 @@ module Fqix
                    @name_interval : UInt32,
                    @checkpoint_metas : Array(CheckpointMeta),
                    @names : Array(NameEntry),
-                   @windows : Array(Bytes)?,
-                   @index_path : String?,
-                   @windows_offset : UInt64,
+                   @window_store : WindowStore,
                    @format_version : UInt32 = VERSION)
-      @cached_checkpoint_id = nil.as(Int32?)
-      @cached_window = nil.as(Bytes?)
     end
 
     def self.default_path(gz_path : String) : String
@@ -176,9 +171,7 @@ module Fqix
         name_interval,
         checkpoint_metas,
         names,
-        windows,
-        nil,
-        0_u64
+        MemoryWindowStore.new(windows)
       )
     end
 
@@ -208,106 +201,19 @@ module Fqix
 
     def checkpoint(id : Int) : Zran::Checkpoint
       meta = checkpoint_metas[id]
-      Zran::Checkpoint.new(meta.out_offset, meta.in_offset, meta.bits, meta.have, window_for(id))
+      Zran::Checkpoint.new(meta.out_offset, meta.in_offset, meta.bits, meta.have, checkpoint_window(id))
     end
 
-    def write(path : String)
-      File.open(path, "wb") do |io|
-        source_path_bytes = source_path.to_slice
-        if source_path_bytes.size > UInt32::MAX
-          raise Error.new("source path too long for index: #{source_path}")
-        end
+    def checkpoint_window(id : Int) : Bytes
+      @window_store.get(id)
+    end
 
-        windows_offset = V3_HEADER_SIZE +
-                         source_path_bytes.size.to_u64 +
-                         checkpoint_metas.size.to_u64 * CHECKPOINT_META_SIZE +
-                         name_table_size
-
-        io.write(MAGIC.to_slice)
-        BinaryIO.write_u32(io, VERSION)
-        BinaryIO.write_u16(io, 0_u16) # flags, reserved
-        BinaryIO.write_u16(io, 0_u16) # header padding
-        BinaryIO.write_u64(io, source_size)
-        BinaryIO.write_i64(io, source_mtime)
-        BinaryIO.write_u64(io, checkpoint_span)
-        BinaryIO.write_u32(io, name_interval)
-        BinaryIO.write_u32(io, source_path_bytes.size.to_u32)
-        BinaryIO.write_u64(io, checkpoint_metas.size.to_u64)
-        BinaryIO.write_u64(io, names.size.to_u64)
-        BinaryIO.write_u64(io, windows_offset)
-        io.write(source_path_bytes)
-
-        checkpoint_metas.each do |checkpoint|
-          write_checkpoint_meta(io, checkpoint)
-        end
-
-        names.each do |entry|
-          write_name_entry(io, entry)
-        end
-
-        unless io.pos.to_u64 == windows_offset
-          raise Error.new("internal index layout error: window offset mismatch")
-        end
-
-        checkpoint_metas.each_index do |index|
-          io.write(window_for(index))
-        end
-      end
+    def write(path : String) : Nil
+      IndexFormat.write(self, path)
     end
 
     def self.read(path : String) : Index
-      File.open(path, "rb") do |io|
-        magic = Bytes.new(8)
-        io.read_fully(magic)
-        unless String.new(magic) == MAGIC
-          raise Error.new("invalid fqix index magic")
-        end
-        version = BinaryIO.read_u32(io)
-        unless version == VERSION
-          raise Error.new("unsupported fqix version #{version}; please rebuild the index")
-        end
-        BinaryIO.read_u16(io) # flags
-        BinaryIO.read_u16(io) # padding
-        source_size = BinaryIO.read_u64(io)
-        source_mtime = BinaryIO.read_i64(io)
-        checkpoint_span = BinaryIO.read_u64(io)
-        name_interval = BinaryIO.read_u32(io)
-        source_path_len = BinaryIO.read_u32(io)
-        ncheckpoints = BinaryIO.read_u64(io)
-        nnames = BinaryIO.read_u64(io)
-        windows_offset = BinaryIO.read_u64(io)
-        path_buf = Bytes.new(source_path_len)
-        io.read_fully(path_buf)
-        source_path = String.new(path_buf)
-
-        checkpoint_metas = Array(CheckpointMeta).new(ncheckpoints.to_i)
-        ncheckpoints.times do
-          checkpoint_metas << read_checkpoint_meta(io)
-        end
-
-        names = Array(NameEntry).new(nnames.to_i)
-        nnames.times do
-          names << read_name_entry(io)
-        end
-
-        if io.pos.to_u64 != windows_offset
-          raise Error.new("invalid fqix index window offset")
-        end
-
-        new(
-          source_path,
-          source_size,
-          source_mtime,
-          checkpoint_span,
-          name_interval,
-          checkpoint_metas,
-          names,
-          nil,
-          path,
-          windows_offset,
-          version
-        )
-      end
+      IndexFormat.read(path)
     end
 
     def stale_for?(gz_path : String) : Bool
@@ -335,79 +241,6 @@ module Fqix
       end
       idx = lo - 1
       names[idx < 0 ? 0 : idx]
-    end
-
-    private def window_for(id : Int) : Bytes
-      if windows = @windows
-        return windows[id]
-      end
-
-      id = id.to_i
-      if @cached_checkpoint_id == id
-        if window = @cached_window
-          return window
-        end
-      end
-
-      path = @index_path || raise Error.new("index checkpoint windows are not available")
-      window = Bytes.new(Zran::WINDOW_SIZE)
-      File.open(path, "rb") do |io|
-        offset = @windows_offset + id.to_u64 * Zran::WINDOW_SIZE.to_u64
-        io.seek(offset.to_i64, IO::Seek::Set)
-        io.read_fully(window)
-      end
-
-      @cached_checkpoint_id = id
-      @cached_window = window
-      window
-    end
-
-    private def name_table_size : UInt64
-      names.sum(0_u64) do |entry|
-        name_size = entry.name.bytesize
-        if name_size > UInt16::MAX
-          raise Error.new("read name too long for index: #{entry.name}")
-        end
-        2_u64 + name_size.to_u64 + 8_u64 + 8_u64 + 8_u64
-      end
-    end
-
-    private def write_checkpoint_meta(io : IO, checkpoint : CheckpointMeta)
-      BinaryIO.write_u64(io, checkpoint.out_offset)
-      BinaryIO.write_u64(io, checkpoint.in_offset)
-      BinaryIO.write_u8(io, checkpoint.bits)
-      BinaryIO.write_u32(io, checkpoint.have)
-    end
-
-    private def self.read_checkpoint_meta(io : IO) : CheckpointMeta
-      out_offset = BinaryIO.read_u64(io)
-      in_offset = BinaryIO.read_u64(io)
-      bits = BinaryIO.read_u8(io)
-      have = BinaryIO.read_u32(io)
-      CheckpointMeta.new(out_offset, in_offset, bits, have)
-    end
-
-    private def write_name_entry(io : IO, entry : NameEntry)
-      name_bytes = entry.name.to_slice
-      if name_bytes.size > UInt16::MAX
-        raise Error.new("read name too long for index: #{entry.name}")
-      end
-      BinaryIO.write_u16(io, name_bytes.size.to_u16)
-      io.write(name_bytes)
-      BinaryIO.write_u64(io, entry.uncompressed_offset)
-      BinaryIO.write_u64(io, entry.checkpoint_id)
-      BinaryIO.write_u64(io, entry.delta)
-    end
-
-    private def self.read_name_entry(io : IO) : NameEntry
-      len = BinaryIO.read_u16(io)
-      buf = Bytes.new(len)
-      io.read_fully(buf)
-      name = String.new(buf)
-      uncompressed_offset = BinaryIO.read_u64(io)
-      checkpoint_id = BinaryIO.read_u64(io)
-      delta = BinaryIO.read_u64(io)
-      NameEntry.new(name, uncompressed_offset, checkpoint_id, delta)
     end
   end
 end
