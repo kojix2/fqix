@@ -330,8 +330,12 @@ describe Fqix::Index do
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
         expect_raises(Fqix::Error, /--name-order lex/) do
-          Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse)
+          Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse, order_mode: Fqix::OrderMode::Lexicographic)
         end
+
+        # Auto (the default) detects natural for this width-varying numeric data.
+        auto_index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse)
+        auto_index.order_mode.should eq(Fqix::OrderMode::Natural)
 
         index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse, order_mode: Fqix::OrderMode::Natural)
         index.order_mode.should eq(Fqix::OrderMode::Natural)

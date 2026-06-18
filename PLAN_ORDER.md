@@ -190,19 +190,28 @@ source_path_len + key_spec_len <= windows_offset - header_size
 ### index
 
 ```sh
-fqix index reads.fastq.gz                               # sparse, --name-order lex (default)
-fqix index --name-order natural reads.fastq.gz          # sparse, natural order
+fqix index reads.fastq.gz                               # sparse, --name-order auto (default)
+fqix index --name-order natural reads.fastq.gz          # force natural
+fqix index --name-order lex reads.fastq.gz              # force bytewise
 fqix index --mode exact --name-order natural reads.fastq.gz   # warns: ignored
 ```
 
-- `--name-order lex|natural` (default `lex`), long-only. Sparse only; warn +
-  ignore for exact.
+- `--name-order auto|lex|natural` (default `auto`), long-only. Sparse only; warn
+  + ignore for exact.
+- `auto` (the default) tries the fixed preset set `{lex, natural}` during the
+  single build pass and **persists the first one the file is monotonic under**
+  (precedence: `lex`, then `natural`). It never stores `auto`; the index always
+  records a concrete mode. If neither is monotonic it fails, suggesting
+  `--mode exact`. `auto` does **not** infer custom orders — that is PR2/PR3.
 - Named `--name-order` (not `--order`) to avoid confusion with `get --order
   input|query`, which controls *output* record order, not the index's sort
   order. A short `-O` is avoided because it sits next to `index -o, --output`.
-- Build verifies monotonicity under the chosen order and, on failure, prints a
-  message naming the offending pair and suggesting alternatives:
-  `FASTQ is not sorted under --name-order natural near "X" < "Y"; try --name-order lex, sort the file, or use --mode exact`.
+- A specific `--name-order` (not `auto`) verifies monotonicity under exactly that
+  order and, on failure, names the offending pair and points at any preset that
+  *would* work:
+  `FASTQ is not sorted under --name-order lex near "X" < "Y"; try --name-order natural, sort the file, or use --mode exact`.
+- When `auto` finds nothing monotonic:
+  `FASTQ is not sorted under any built-in --name-order (tried lex, natural); sort the file or use --mode exact`.
 
 ### get
 
@@ -273,27 +282,24 @@ Those are the tail handled by the later field-key work.
 
 ## Staging
 
-### PR1 — built-in modes + persistence (this plan)
+### PR1 — built-in modes + persistence + auto default (this plan)
 
 - Add `OrderMode { Lexicographic, Natural }`.
 - Implement and freeze the `natural` comparator.
 - Make `Order.compare` dispatch on `order_mode`.
 - Store `order_mode` in sparse indexes; bump sparse to `1.1`; read `1.0` as lex.
-- CLI: `--name-order lex|natural` (sparse only, warn on exact); `get` reads order
-  from the index; `show` prints `order_mode`.
-
-PR1 deliberately excludes `auto`: the current `SparseNameTableBuilder` raises on
-the first monotonicity violation, so trying multiple comparators needs a builder
-that tracks each candidate's monotonic state in parallel — a non-trivial change
-that should not bloat PR1.
-
-### PR1.5 — `--name-order auto` over the fixed presets
-
-- Try the fixed preset set `{lex, natural}` in the single build pass and pick
-  the first monotonic one (or error, suggesting `exact`).
-- Requires the builder to track each candidate's monotonic state simultaneously.
-- Persists the concrete chosen mode, not `auto`. Does **not** infer custom
-  orders.
+- `--name-order auto|lex|natural`, **default `auto`** (sparse only, warn on
+  exact); `get` reads order from the index; `show` prints the concrete mode.
+- `auto` is cheap over the two fixed presets: `SparseNameTableBuilder` tracks a
+  per-candidate "still monotonic" flag (and first-violation pair) during the
+  single build pass — anchors are recorded order-independently — and
+  `build_sparse` resolves the concrete mode at finish. This is why `auto` is the
+  default and not deferred: it makes bare `fqix index reads.fastq.gz` work on
+  both lex- and natural-sorted files (e.g. the DRR example) with no flag, which
+  the fixed `lex` default did not.
+- `auto` cannot become the *single* default by switching to `natural`: a
+  lex-sorted file of opaque IDs (`a10` < `a9` bytewise) is not natural-monotonic,
+  so only "try both" is correct.
 
 ### PR2 — declarative key extraction (the "custom order" tail)
 
@@ -337,20 +343,27 @@ PR1:
    example; confirm `265 < 572 < 904` and that `get` returns each record.
 2. A file sorted by variable-width numbers (`.9`, `.10`, `.100`): `natural`
    builds and looks up correctly; `lex` fails the monotonicity check.
-3. A bytewise-sorted file builds under `--name-order lex` (default) and fails
-   under `natural` only if genuinely non-monotonic.
-4. `order_mode` round-trips through write/read and appears in `show`.
-5. A `1.0` index (no order field) reads back as `lex`.
-6. A `1.1` index with an unknown `order_mode`, or non-zero reserved bytes, is
+3. A bytewise-sorted file builds under `--name-order lex` and fails under
+   `natural` only if genuinely non-monotonic.
+4. `auto` (the default) picks `natural` for the DRR example and `lex` for a
+   bytewise-sorted file; an explicit `--name-order lex` on natural data fails
+   and the message suggests `natural`; `auto` on data monotonic under neither
+   fails suggesting `--mode exact`.
+5. `order_mode` round-trips through write/read and appears in `show`.
+6. A `1.0` index (no order field) reads back as `lex`.
+7. A `1.1` index with an unknown `order_mode`, or non-zero reserved bytes, is
    rejected.
-7. `--name-order` with `--mode exact` warns and is ignored; the exact
+8. `--name-order` with `--mode exact` warns and is ignored; the exact
    `input_names_sorted` diagnostic stays bytewise regardless of `order_mode`.
-8. `get` uses the persisted order with no order option supplied.
+9. `get` uses the persisted order with no order option supplied.
 
 ## Completion criteria for PR1
 
-- `fqix index --name-order lex|natural` selects and persists the sparse order
-  mode.
+- `fqix index --name-order auto|lex|natural` selects and persists the sparse
+  order mode; the default is `auto`.
+- `auto` tries `{lex, natural}` and persists the first monotonic one (precedence
+  lex → natural), so bare `fqix index` works on lex- and natural-sorted files;
+  it never stores `auto`, and fails to `--mode exact` when neither is monotonic.
 - Sparse `1.1` indexes store `order_mode`; `1.0` indexes still read as `lex`;
   unknown `order_mode` and non-zero reserved bytes are rejected.
 - `natural` is implemented to the frozen specification (no BigInt) and
@@ -358,7 +371,7 @@ PR1:
 - `get` reproduces the build order from the index with no order option.
 - `--name-order` is sparse-only and warns under `--mode exact`; the exact
   `input_names_sorted` diagnostic remains a fixed bytewise comparison.
-- `show` reports `order_mode`.
-- The build monotonicity check reports failures under the chosen order with an
-  actionable message.
-- `auto` and the regex/field key spec are explicitly **out of PR1 scope**.
+- `show` reports the concrete `order_mode`.
+- A specific `--name-order` reports monotonicity failures with an actionable
+  message that points at a preset that would work.
+- The regex/field key spec (PR2) is explicitly **out of PR1 scope**.

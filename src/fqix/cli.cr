@@ -35,7 +35,7 @@ module Fqix
       property index_mode = Index::DEFAULT_MODE
       property name_interval = Index::DEFAULT_NAME_INTERVAL
       property? name_interval_set = false
-      property name_order = Index::DEFAULT_ORDER_MODE
+      property name_order : OrderMode? = nil # nil = auto-detect
       property? name_order_set = false
       property scan_bytes = Reader::DEFAULT_SCAN_BYTES
       property list_path : String?
@@ -142,7 +142,7 @@ module Fqix
       parser.on("-c", "--checkpoint-span BYTES", "Uncompressed bytes between zran checkpoints [4194304]") { |v| opt.checkpoint_span = parse_u64(v, "checkpoint span") }
       parser.on("-m", "--mode MODE", "Index mode: sparse or exact [sparse]") { |v| opt.index_mode = parse_index_mode(v) }
       parser.on("-n", "--name-interval N", "Sparse anchor interval [1024]") { |v| opt.name_interval = parse_u32(v, "name interval"); opt.name_interval_set = true }
-      parser.on("--name-order ORDER", "Sparse read-name order: lex or natural [lex]") { |v| opt.name_order = parse_name_order(v); opt.name_order_set = true }
+      parser.on("--name-order ORDER", "Sparse read-name order: auto, lex, or natural [auto]") { |v| opt.name_order = parse_name_order(v); opt.name_order_set = true }
       parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
     end
@@ -412,8 +412,10 @@ module Fqix
       end
     end
 
-    private def parse_name_order(s : String) : OrderMode
+    private def parse_name_order(s : String) : OrderMode?
       case s
+      when "auto"
+        nil
       when "lex"
         OrderMode::Lexicographic
       when "natural"

@@ -36,7 +36,7 @@ Build the default index next to a FASTQ file:
 fqix index reads.fastq.gz
 ```
 
-By default, fqix builds a **sparse** index. Sparse indexes are small, but they require read names to be sorted by the index's read-name order. The default order is bytewise `lex`; use `--name-order natural` for names with variable-width numeric fields.
+By default, fqix builds a **sparse** index. Sparse indexes are small, but they require read names to be sorted by the index's read-name order. The default `--name-order auto` tries bytewise `lex` then `natural` and stores whichever order the file is monotonic under, so most name-sorted FASTQ files index with no flag (including names with variable-width numeric fields). Force one with `--name-order lex` or `natural`.
 
 Use **exact** mode when the FASTQ read order is not reliable:
 

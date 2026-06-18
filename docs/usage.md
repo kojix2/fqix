@@ -50,11 +50,11 @@ Options:
 - `-c, --checkpoint-span BYTES`: target uncompressed spacing between gzip restart checkpoints.
 - `-m, --mode sparse|exact`: index strategy; default is `sparse`.
 - `-n, --name-interval N`: sparse anchor interval; default is `1024`.
-- `--name-order lex|natural`: sparse read-name order; default is `lex`.
+- `--name-order auto|lex|natural`: sparse read-name order; default is `auto`.
 
 Sparse mode writes a v1-compatible small index and rejects unsorted FASTQ. Exact mode writes a v2 full hash index and accepts arbitrary FASTQ order.
 
-Use `--name-order natural` for sparse FASTQ files sorted by read names with variable-width numeric fields, such as `DRR000001.904` before `DRR000001.1077`. Exact mode ignores `--name-order`.
+By default (`auto`), fqix tries `lex` then `natural` during indexing and stores the first order the file is monotonic under, so a name-sorted FASTQ usually indexes with no flag — including files with variable-width numeric fields such as `DRR000001.904` before `DRR000001.1077`. Pass an explicit `--name-order lex` or `natural` to force one, or `--mode exact` if the file is not name-sorted at all. Exact mode ignores `--name-order`.
 
 ### `fqix get`
 

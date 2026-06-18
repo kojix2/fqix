@@ -117,13 +117,20 @@ module Fqix
   class SparseNameTableBuilder
     record Anchor, name : String, offset : UInt64
 
+    # Candidate read-name orders tried during build, in auto-detection
+    # precedence (the first monotonic one wins when the order is `auto`).
+    ORDER_CANDIDATES = [OrderMode::Lexicographic, OrderMode::Natural]
+
     getter anchors : Array(Anchor)
     getter record_count = 0_u64
 
-    def initialize(@name_interval : UInt32, @order_mode : OrderMode)
+    def initialize(@name_interval : UInt32)
       @anchors = [] of Anchor
       @record_index = 0_u64
       @last_name = nil.as(String?)
+      @monotonic = Hash(OrderMode, Bool).new
+      @first_violation = Hash(OrderMode, Tuple(String, String)).new
+      ORDER_CANDIDATES.each { |mode| @monotonic[mode] = true }
       @header = IO::Memory.new
       @framer = Fastq::StreamParser.new(
         ->(segment : Bytes, line_in_record : Int32, _line_start : UInt64) {
@@ -145,10 +152,24 @@ module Fqix
       @framer.finish
     end
 
+    # Whether the read names seen so far are monotonic under `mode`.
+    def monotonic?(mode : OrderMode) : Bool
+      @monotonic.fetch(mode, false)
+    end
+
+    # The first {previous, current} inversion observed under `mode`, if any.
+    def first_violation(mode : OrderMode) : Tuple(String, String)?
+      @first_violation[mode]?
+    end
+
     private def complete_record(name : String, record_start : UInt64) : Nil
       if last = @last_name
-        if Order.compare(name, last, @order_mode) < 0
-          raise Error.new("FASTQ is not sorted under --name-order #{Index.order_mode_label(@order_mode)} near #{name.inspect} < #{last.inspect}; try --name-order lex, sort the file, or use --mode exact")
+        ORDER_CANDIDATES.each do |mode|
+          next unless @monotonic[mode]
+          if Order.compare(name, last, mode) < 0
+            @monotonic[mode] = false
+            @first_violation[mode] = {last, name}
+          end
         end
       end
       @last_name = name
@@ -282,7 +303,7 @@ module Fqix
                    checkpoint_span : UInt64 = DEFAULT_CHECKPOINT_SPAN,
                    mode : IndexMode = DEFAULT_MODE,
                    name_interval : UInt32 = DEFAULT_NAME_INTERVAL,
-                   order_mode : OrderMode = DEFAULT_ORDER_MODE) : Index
+                   order_mode : OrderMode? = nil) : Index
       raise Error.new("checkpoint span must be greater than zero") if checkpoint_span == 0
 
       case mode
@@ -293,15 +314,18 @@ module Fqix
       end
     end
 
+    # `order_mode` is the requested sparse read-name order; `nil` means auto —
+    # try each `SparseNameTableBuilder::ORDER_CANDIDATES` in precedence and
+    # persist the first one the FASTQ is monotonic under.
     def self.build_sparse(gz_path : String,
                           checkpoint_span : UInt64 = DEFAULT_CHECKPOINT_SPAN,
                           name_interval : UInt32 = DEFAULT_NAME_INTERVAL,
-                          order_mode : OrderMode = DEFAULT_ORDER_MODE) : Index
+                          order_mode : OrderMode? = nil) : Index
       raise Error.new("name interval must be greater than zero") if name_interval == 0
       raise Error.new("checkpoint span must be greater than zero") if checkpoint_span == 0
 
       info = File.info(gz_path)
-      builder = SparseNameTableBuilder.new(name_interval, order_mode)
+      builder = SparseNameTableBuilder.new(name_interval)
       tmp = build_zran_temp(gz_path, checkpoint_span, builder)
       begin
         checkpoints = Zran.read_temp(tmp)
@@ -310,6 +334,7 @@ module Fqix
       end
       builder.finish
 
+      resolved_order = resolve_sparse_order(builder, order_mode)
       checkpoint_metas = checkpoints.map { |checkpoint| CheckpointMeta.from_checkpoint(checkpoint) }
       windows = checkpoints.map(&.window)
       names = build_name_table(checkpoint_metas, builder.anchors)
@@ -320,7 +345,7 @@ module Fqix
         checkpoint_span,
         IndexMode::Sparse,
         name_interval,
-        order_mode,
+        resolved_order,
         DEFAULT_HASH_ALGORITHM,
         DEFAULT_HASH_SEED,
         DEFAULT_NAME_MODE,
@@ -333,6 +358,41 @@ module Fqix
         MemoryWindowStore.new(windows),
         IndexFormat::SPARSE_VERSION
       )
+    end
+
+    # Resolve the concrete sparse order to persist. A specific request must be
+    # monotonic or it fails; `nil` (auto) picks the first monotonic candidate.
+    private def self.resolve_sparse_order(builder : SparseNameTableBuilder, requested : OrderMode?) : OrderMode
+      if requested
+        return requested if builder.monotonic?(requested)
+        raise Error.new(sparse_order_failure_message(builder, requested))
+      end
+
+      chosen = SparseNameTableBuilder::ORDER_CANDIDATES.find { |mode| builder.monotonic?(mode) }
+      return chosen if chosen
+
+      tried = SparseNameTableBuilder::ORDER_CANDIDATES.map { |mode| order_mode_label(mode) }.join(", ")
+      raise Error.new("FASTQ is not sorted under any built-in --name-order (tried #{tried}); sort the file or use --mode exact")
+    end
+
+    private def self.sparse_order_failure_message(builder : SparseNameTableBuilder, requested : OrderMode) : String
+      alternatives = SparseNameTableBuilder::ORDER_CANDIDATES.select do |mode|
+        mode != requested && builder.monotonic?(mode)
+      end
+      suffix =
+        if alternatives.empty?
+          "sort the file, or use --mode exact"
+        else
+          labels = alternatives.map { |mode| order_mode_label(mode) }.join(" or ")
+          "try --name-order #{labels}, sort the file, or use --mode exact"
+        end
+
+      if violation = builder.first_violation(requested)
+        prev, cur = violation
+        "FASTQ is not sorted under --name-order #{order_mode_label(requested)} near #{cur.inspect} < #{prev.inspect}; #{suffix}"
+      else
+        "FASTQ is not sorted under --name-order #{order_mode_label(requested)}; #{suffix}"
+      end
     end
 
     def self.build_exact(gz_path : String,

@@ -258,12 +258,15 @@ describe Fqix::CLI do
         gzip_file.close
         SpecCliSupport.write_gzip_fastq(gz_path, records)
 
-        status, stdout, stderr = SpecCliSupport.run_cli(["index", gz_path])
+        # Explicit lex is rejected, and the message points at the order that works.
+        status, stdout, stderr = SpecCliSupport.run_cli(["index", "--name-order", "lex", gz_path])
         status.should eq(1)
         stdout.should be_empty
         stderr.should contain("not sorted under --name-order lex")
+        stderr.should contain("try --name-order natural")
 
-        status, stdout, stderr = SpecCliSupport.run_cli(["index", "--name-order", "natural", gz_path])
+        # The default (auto) detects natural and succeeds with no flag.
+        status, stdout, stderr = SpecCliSupport.run_cli(["index", gz_path])
         status.should eq(0)
         stdout.should be_empty
         stderr.should contain("wrote #{index_path}")

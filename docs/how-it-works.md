@@ -19,7 +19,7 @@ During indexing, fqix reads the FASTQ once and records:
 - the first read-name anchor
 - every `--name-interval`-th read-name anchor
 
-Sparse mode checks that read names are sorted by the selected `--name-order`. The default `lex` mode is bytewise lexicographic; `natural` compares ASCII digit runs by numeric value without integer conversion. If a later read orders before an earlier read, indexing stops and suggests another order or `--mode exact`.
+Sparse mode checks that read names are sorted by the selected `--name-order`. `lex` is bytewise lexicographic; `natural` compares ASCII digit runs by numeric value without integer conversion. The default `auto` tries `lex` then `natural` in the single indexing pass and stores the first order the file is monotonic under. If no order matches, indexing stops and suggests another order or `--mode exact`.
 
 Lookup binary-searches the anchor table for the nearest lower name, resumes gzip inflation at that anchor, then scans forward. Because matching records sit together in sorted order, the scan collects every record with the target name, stopping once it moves past the name or reaches `--scan-limit`.
 
