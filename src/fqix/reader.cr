@@ -74,7 +74,7 @@ module Fqix
           @targets[name] << index
         end
 
-        @pending = @targets.keys
+        @unresolved = @targets.keys
         @buf = IO::Memory.new    # full bytes of the record being assembled
         @header = IO::Memory.new # bytes of the current header line only
         @framer = Fastq::StreamParser.new(
@@ -99,20 +99,20 @@ module Fqix
 
       def mark_unresolved(limit_reached : Bool) : Nil
         status = limit_reached ? FetchResult.scan_limit_reached : FetchResult.not_found
-        @pending.each do |name|
+        @unresolved.each do |name|
           @targets[name].each do |index|
             @results[index] = status
           end
         end
-        @pending.clear
+        @unresolved.clear
       end
 
       private def decide : Nil
         name = Fastq.name_from_header(@header.to_s)
         record = nil.as(String?)
-        next_pending = [] of String
+        next_unresolved = [] of String
 
-        @pending.each do |query|
+        @unresolved.each do |query|
           order = Order.compare(name, query)
           if order == 0 && name == query
             found_record = record || @buf.to_s
@@ -125,17 +125,17 @@ module Fqix
               @results[index] = FetchResult.not_found
             end
           else
-            next_pending << query
+            next_unresolved << query
           end
         end
 
-        @pending = next_pending
+        @unresolved = next_unresolved
         @buf.clear
         @header.clear
       end
 
       private def done? : Bool
-        @pending.empty?
+        @unresolved.empty?
       end
     end
   end
