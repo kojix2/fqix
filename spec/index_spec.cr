@@ -92,6 +92,17 @@ describe Fqix::Index do
       read_index.source_path.should eq(gz_path)
       read_index.checkpoint_metas.size.should eq(index.checkpoint_metas.size)
       Fqix::Reader.new(gz_path, read_index).fetch("read0400", 64_u64 * 1024_u64).should eq(records[400][1])
+
+      batch = Fqix::Reader.new(gz_path, read_index).fetch_many(["read0123", "missing", "read0000", "read0123"], 64_u64 * 1024_u64)
+      batch.map(&.status).should eq([
+        Fqix::Reader::FetchStatus::Found,
+        Fqix::Reader::FetchStatus::NotFound,
+        Fqix::Reader::FetchStatus::Found,
+        Fqix::Reader::FetchStatus::Found,
+      ])
+      batch[0].record.should eq(records[123][1])
+      batch[2].record.should eq(records[0][1])
+      batch[3].record.should eq(records[123][1])
     ensure
       File.delete(gz_path) if File.exists?(gz_path)
       File.delete(index_path) if File.exists?(index_path)
@@ -117,6 +128,7 @@ describe Fqix::Index do
       reader = Fqix::Reader.new(gz_path, index)
       reader.fetch("read08", 4096_u64).should eq(records[8][1])
       reader.fetch_with_status("read08", 8_u64).status.scan_limit_reached?.should be_true
+      reader.fetch_many(["read08"], 8_u64).first.status.scan_limit_reached?.should be_true
     ensure
       File.delete(gz_path) if File.exists?(gz_path)
     end

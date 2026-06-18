@@ -157,8 +157,8 @@ module Fqix
 
       reader = Reader.new(gz, idx)
       found = 0
-      names.each do |name|
-        result = reader.fetch_with_status(name, opt.scan_bytes)
+      results = reader.fetch_many(names, opt.scan_bytes)
+      names.zip(results).each do |name, result|
         case result.status
         in .found?
           @out << result.record
