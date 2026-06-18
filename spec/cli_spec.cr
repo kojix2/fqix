@@ -11,6 +11,14 @@ module SpecCliSupport
     status = Fqix::CLI.new(args, stdout, stderr).run
     {status, stdout.to_s, stderr.to_s}
   end
+
+  def write_gzip_fastq(path : String, records : Array(String)) : Nil
+    File.open(path, "wb") do |file|
+      Compress::Gzip::Writer.open(file) do |gzip|
+        records.each { |record| gzip << record }
+      end
+    end
+  end
 end
 
 describe Fqix::CLI do
@@ -40,6 +48,33 @@ describe Fqix::CLI do
     status.should eq(1)
     stdout.should be_empty
     stderr.should contain("unknown command: wat")
+  end
+
+  it "indexes a small FASTQ.gz and gets one read through the CLI" do
+    File.tempfile("fqix-cli-small", ".fastq.gz") do |gz|
+      gz_path = gz.path
+      index_path = "#{gz_path}.fqix"
+      records = [
+        "@read001\nACGT\n+\nIIII\n",
+        "@read002 comment\nTGCA\n+\nJJJJ\n",
+        "@read003\nGATTACA\n+\nHHHHHHH\n",
+      ]
+      gz.close
+      SpecCliSupport.write_gzip_fastq(gz_path, records)
+
+      status, stdout, stderr = SpecCliSupport.run_cli(["index", "--name-interval=1", gz_path])
+      status.should eq(0)
+      stdout.should be_empty
+      stderr.should contain("wrote #{index_path}")
+      File.exists?(index_path).should be_true
+
+      status, stdout, stderr = SpecCliSupport.run_cli(["get", gz_path, "read002"])
+      status.should eq(0)
+      stdout.should eq(records[1])
+      stderr.should be_empty
+    ensure
+      File.delete(index_path) if index_path && File.exists?(index_path)
+    end
   end
 
   it "reports missing FASTQ input for index without a stack trace" do
