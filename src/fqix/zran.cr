@@ -30,9 +30,9 @@ module Fqix
     GZIP_WINDOW_BITS =     47
     RAW_WINDOW_BITS  =    -15
     TMP_MAGIC        = "FQIXZR1\0"
-    BLOCK_BOUNDARY   =    128
-    LAST_BLOCK       =     64
-    BITS_MASK        =      7
+    BLOCK_BOUNDARY   = 128
+    LAST_BLOCK       =  64
+    BITS_MASK        =   7
 
     struct Checkpoint
       getter out_offset : UInt64
@@ -46,6 +46,15 @@ module Fqix
     end
 
     record ExtractResult, path : String, limit_reached : Bool
+
+    private class BuildState
+      property out_seen = 0_u64
+      property member_start = 0_u64
+      property last_point = 0_u64
+      property count = 1_u64
+      property input_read = 0_u64
+      getter window = Bytes.new(WINDOW_SIZE)
+    end
 
     def self.build_to_temp(gz_path : String, span : UInt64, consumer : Proc(Bytes, Nil)? = nil) : String
       raise Error.new("checkpoint span must be greater than zero") if span == 0
@@ -238,59 +247,37 @@ module Fqix
     end
 
     private def self.process_index_stream(input : File, output : File, stream : LibZ::ZStream*, checkpoint_span : UInt64, consumer : Proc(Bytes, Nil)?) : UInt64
-      count = 1_u64
-      out_seen = 0_u64
-      member_start = 0_u64
-      last_point = 0_u64
-      window = Bytes.new(WINDOW_SIZE)
+      state = BuildState.new
       input_buffer = Bytes.new(CHUNK_SIZE)
       output_buffer = Bytes.new(CHUNK_SIZE)
-      input_read = 0_u64
 
       stream.value.avail_in = 0_u32
       loop do
-        read_input(input, stream, input_buffer, pointerof(input_read))
-        ret = inflate_blocks(
-          output,
-          stream,
-          output_buffer,
-          window,
-          pointerof(out_seen),
-          pointerof(member_start),
-          pointerof(last_point),
-          pointerof(count),
-          checkpoint_span,
-          input_read,
-          consumer
-        )
-        if ret.stream_end? && reset_for_next_member(input, stream, input_buffer, pointerof(input_read), pointerof(member_start), out_seen)
+        read_input(input, stream, input_buffer, state)
+        ret = inflate_blocks(output, stream, output_buffer, state, checkpoint_span, consumer)
+        if ret.stream_end? && reset_for_next_member(input, stream, input_buffer, state)
           next
         end
         break if ret.stream_end?
       end
 
-      count
+      state.count
     end
 
-    private def self.read_input(input : File, stream : LibZ::ZStream*, buffer : Bytes, input_read : UInt64*? = nil)
+    private def self.read_input(input : File, stream : LibZ::ZStream*, buffer : Bytes, state : BuildState? = nil)
       return unless stream.value.avail_in == 0
 
       stream.value.next_in = buffer.to_unsafe
       bytes_read = input.read(buffer)
-      input_read.value += bytes_read if input_read
+      state.input_read += bytes_read if state
       stream.value.avail_in = bytes_read.to_u32
     end
 
     private def self.inflate_blocks(output : File,
                                     stream : LibZ::ZStream*,
                                     buffer : Bytes,
-                                    window : Bytes,
-                                    out_seen : UInt64*,
-                                    member_start : UInt64*,
-                                    last_point : UInt64*,
-                                    count : UInt64*,
+                                    state : BuildState,
                                     checkpoint_span : UInt64,
-                                    input_read : UInt64,
                                     consumer : Proc(Bytes, Nil)?) : LibZ::Error
       loop do
         stream.value.next_out = buffer.to_unsafe
@@ -300,53 +287,48 @@ module Fqix
         produced = buffer.size - stream.value.avail_out
         if produced > 0
           chunk = buffer[0, produced]
-          append_window(window, out_seen, chunk)
+          append_window(state, chunk)
           consumer.try &.call(chunk)
         end
         raise_zlib_error("inflate failed while building zran index", ret) unless ret.ok? || ret.stream_end?
 
-        if checkpoint_ready?(stream.value, out_seen.value, last_point.value, checkpoint_span)
-          write_index_checkpoint(output, stream.value, window, out_seen.value, member_start.value, input_read)
-          count.value += 1
-          last_point.value = out_seen.value
+        if checkpoint_ready?(stream.value, state, checkpoint_span)
+          write_index_checkpoint(output, stream.value, state)
+          state.count += 1
+          state.last_point = state.out_seen
         end
 
         return ret if stream.value.avail_in == 0 || ret.stream_end?
       end
     end
 
-    private def self.checkpoint_ready?(stream : LibZ::ZStream, out_seen : UInt64, last_point : UInt64, span : UInt64) : Bool
+    private def self.checkpoint_ready?(stream : LibZ::ZStream, state : BuildState, span : UInt64) : Bool
       data_type = stream.data_type
-      out_seen - last_point >= span && (data_type & BLOCK_BOUNDARY) != 0 && (data_type & LAST_BLOCK) == 0
+      state.out_seen - state.last_point >= span && (data_type & BLOCK_BOUNDARY) != 0 && (data_type & LAST_BLOCK) == 0
     end
 
     private def self.write_index_checkpoint(output : File,
                                             stream : LibZ::ZStream,
-                                            window : Bytes,
-                                            out_seen : UInt64,
-                                            member_start : UInt64,
-                                            input_read : UInt64)
-      in_offset = input_read - stream.avail_in
+                                            state : BuildState)
+      in_offset = state.input_read - stream.avail_in
       bits = (stream.data_type & BITS_MASK).to_u8
       in_offset &-= 1 if bits != 0
-      write_checkpoint(output, out_seen, in_offset, bits, make_dict(window, out_seen, member_start))
+      write_checkpoint(output, state.out_seen, in_offset, bits, make_dict(state.window, state.out_seen, state.member_start))
     end
 
     private def self.reset_for_next_member(input : File,
                                            stream : LibZ::ZStream*,
                                            buffer : Bytes,
-                                           input_read : UInt64*,
-                                           member_start : UInt64*,
-                                           out_seen : UInt64) : Bool
-      next_member_pos = input_read.value - stream.value.avail_in
+                                           state : BuildState) : Bool
+      next_member_pos = state.input_read - stream.value.avail_in
       input.seek(next_member_pos.to_i64, IO::Seek::Set)
-      input_read.value = next_member_pos
+      state.input_read = next_member_pos
       stream.value.avail_in = 0_u32
 
-      return false unless ensure_input_available(input, stream, buffer, input_read)
+      return false unless ensure_input_available(input, stream, buffer, state)
       ret = LibZ.inflateReset2(stream, GZIP_WINDOW_BITS)
       raise_zlib_error("inflateReset2 failed while building zran index", ret)
-      member_start.value = out_seen
+      state.member_start = state.out_seen
       true
     end
 
@@ -363,20 +345,20 @@ module Fqix
       true
     end
 
-    private def self.ensure_input_available(input : File, stream : LibZ::ZStream*, buffer : Bytes, input_read : UInt64*? = nil) : Bool
+    private def self.ensure_input_available(input : File, stream : LibZ::ZStream*, buffer : Bytes, state : BuildState? = nil) : Bool
       return true if stream.value.avail_in > 0
 
       stream.value.next_in = buffer.to_unsafe
       bytes_read = input.read(buffer)
-      input_read.value += bytes_read if input_read
+      state.input_read += bytes_read if state
       stream.value.avail_in = bytes_read.to_u32
       bytes_read > 0
     end
 
-    private def self.append_window(window : Bytes, out_seen : UInt64*, bytes : Bytes)
-      pos = out_seen.value
+    private def self.append_window(state : BuildState, bytes : Bytes)
+      pos = state.out_seen
       n = bytes.size
-      out_seen.value = pos + n
+      state.out_seen = pos + n
 
       # Only the last WINDOW_SIZE bytes can ever survive in the circular buffer,
       # so copy at most that many. WINDOW_SIZE is a power of two, so the slice of
@@ -387,9 +369,9 @@ module Fqix
       head = WINDOW_SIZE - dst
       head = keep if keep < head
 
-      window[dst, head].copy_from(bytes[src_off, head])
+      state.window[dst, head].copy_from(bytes[src_off, head])
       if keep > head
-        window[0, keep - head].copy_from(bytes[src_off + head, keep - head])
+        state.window[0, keep - head].copy_from(bytes[src_off + head, keep - head])
       end
     end
 
