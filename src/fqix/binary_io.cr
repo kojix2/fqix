@@ -2,6 +2,45 @@ module Fqix
   module BinaryIO
     extend self
 
+    class Writer
+      def initialize(@io : IO)
+      end
+
+      def u8(value : UInt8) : Nil
+        BinaryIO.write_u8(@io, value)
+      end
+
+      def u16(value : UInt16) : Nil
+        BinaryIO.write_u16(@io, value)
+      end
+
+      def u32(value : UInt32) : Nil
+        BinaryIO.write_u32(@io, value)
+      end
+
+      def u64(value : UInt64) : Nil
+        BinaryIO.write_u64(@io, value)
+      end
+
+      def i64(value : Int64) : Nil
+        BinaryIO.write_i64(@io, value)
+      end
+
+      def bytes(value : Bytes) : Nil
+        @io.write(value)
+      end
+    end
+
+    def write(io : IO, & : Writer ->) : Nil
+      yield Writer.new(io)
+    end
+
+    def build(& : Writer ->) : Bytes
+      io = IO::Memory.new
+      write(io) { |writer| yield writer }
+      io.to_slice
+    end
+
     def read_u8(io : IO) : UInt8
       io.read_byte || raise IO::EOFError.new
     end
