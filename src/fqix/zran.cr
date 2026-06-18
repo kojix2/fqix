@@ -30,6 +30,9 @@ module Fqix
     GZIP_WINDOW_BITS =     47
     RAW_WINDOW_BITS  =    -15
     TMP_MAGIC        = "FQIXZR1\0"
+    BLOCK_BOUNDARY   =    128
+    LAST_BLOCK       =     64
+    BITS_MASK        =      7
 
     struct Checkpoint
       getter out_offset : UInt64
@@ -314,7 +317,7 @@ module Fqix
 
     private def self.checkpoint_ready?(stream : LibZ::ZStream, out_seen : UInt64, last_point : UInt64, span : UInt64) : Bool
       data_type = stream.data_type
-      out_seen - last_point >= span && (data_type & 128) != 0 && (data_type & 64) == 0
+      out_seen - last_point >= span && (data_type & BLOCK_BOUNDARY) != 0 && (data_type & LAST_BLOCK) == 0
     end
 
     private def self.write_index_checkpoint(output : File,
@@ -324,7 +327,7 @@ module Fqix
                                             member_start : UInt64,
                                             input_read : UInt64)
       in_offset = input_read - stream.avail_in
-      bits = (stream.data_type & 7).to_u8
+      bits = (stream.data_type & BITS_MASK).to_u8
       in_offset &-= 1 if bits != 0
       write_checkpoint(output, out_seen, in_offset, bits, make_dict(window, out_seen, member_start))
     end
