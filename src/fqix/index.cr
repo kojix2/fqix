@@ -260,9 +260,8 @@ module Fqix
     def normalize_query(query : String) : String
       case name_mode
       in .first_token?
-        name = query.starts_with?('@') ? query[1..] : query
-        index = Fastq.first_whitespace_index(name)
-        index ? name[0, index] : name
+        index = Fastq.first_whitespace_index(query)
+        index ? query[0, index] : query
       end
     end
 

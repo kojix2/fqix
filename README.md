@@ -73,7 +73,7 @@ ACGTACGT
 IIIIIIII
 ```
 
-Multiline sequence or quality fields are not supported. The read name is the text after `@` up to the first space or tab.
+Multiline sequence or quality fields are not supported. The read name is the text after the header's first `@` up to the first space or tab. Query names are bare read names; a leading `@` in the query is treated as part of the name.
 
 ## How It Works
 

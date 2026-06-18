@@ -51,6 +51,9 @@ module Fqix
     end
 
     private def fetch_entry(query : String, entry : Entry) : String
+      if @index.checkpoint_metas.empty?
+        raise Error.new("invalid fqix index checkpoint count")
+      end
       checkpoint_id = Index.checkpoint_for(@index.checkpoint_metas, entry.record_offset)
       checkpoint = @index.checkpoint(checkpoint_id)
       delta = entry.record_offset - @index.checkpoint_metas[checkpoint_id].out_offset

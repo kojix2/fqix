@@ -105,11 +105,32 @@ describe Fqix::Index do
 
       index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64)
       index.find_entries("read1 extra").size.should eq(1)
-      index.find_entries("@read1 extra").size.should eq(1)
+      index.find_entries("@read1 extra").size.should eq(0)
 
       reader = Fqix::Reader.new(gz_path, index)
       reader.fetch("read1 extra").should eq(records[0][1])
-      reader.fetch("@read1 extra").should eq(records[0][1])
+      reader.fetch("@read1 extra").should be_nil
+    ensure
+      File.delete(gz_path) if File.exists?(gz_path)
+    end
+  end
+
+  it "fetches a read whose normalized name starts with at-sign" do
+    gz_path = File.tempname("fqix-at-name-spec", ".fastq.gz")
+    records = [
+      {"@weird", "@@weird comment\nACGT\n+\nIIII\n"},
+    ]
+
+    begin
+      SpecIndexSupport.write_gzip_member(gz_path, records)
+
+      index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64)
+      index.find_entries("@weird").size.should eq(1)
+      index.find_entries("@@weird").size.should eq(0)
+
+      reader = Fqix::Reader.new(gz_path, index)
+      reader.fetch("@weird").should eq(records[0][1])
+      reader.fetch("@@weird").should be_nil
     ensure
       File.delete(gz_path) if File.exists?(gz_path)
     end
@@ -143,6 +164,35 @@ describe Fqix::Index do
     matches = index.find_entries("beta extra")
     matches.size.should eq(1)
     index.entry_name(matches.first).should eq("beta")
+  end
+
+  it "rejects fetching from an index with entries but no checkpoints" do
+    entries, name_table = Fqix::Index.build_entries(
+      [
+        Fqix::RawEntry.new("read1", 0_u64, 0_u64, 20_u64),
+      ],
+      Fqix::HashAlgorithm::Fnv1a64,
+      0_u64
+    )
+    index = Fqix::Index.new(
+      "reads.fastq.gz",
+      0_u64,
+      0_i64,
+      1_u64,
+      Fqix::HashAlgorithm::Fnv1a64,
+      0_u64,
+      Fqix::NameMode::FirstToken,
+      1_u64,
+      true,
+      [] of Fqix::CheckpointMeta,
+      entries,
+      name_table,
+      Fqix::MemoryWindowStore.new([] of Bytes)
+    )
+
+    expect_raises(Fqix::Error, "invalid fqix index checkpoint count") do
+      Fqix::Reader.new("reads.fastq.gz", index).fetch("read1")
+    end
   end
 
   it "detects an index/source mismatch after seeking to a record" do

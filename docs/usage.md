@@ -54,6 +54,10 @@ requested.
 fqix get [OPTIONS] reads.fastq.gz read-name...
 ```
 
+`read-name` is the normalized FASTQ read name, not the full header line. In the
+default mode this is the text after the header's first `@` up to the first
+space or tab; a leading `@` in the query is treated as part of the read name.
+
 Options:
 
 - `-i, --index FILE`: use an explicit `.fqix` index path.
