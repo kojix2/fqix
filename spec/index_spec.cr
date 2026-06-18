@@ -98,9 +98,14 @@ module SpecIndexSupport
   end
 
   def write_exact_index_with_entry_flags(path : String, flags : UInt32)
+    entry = Fqix::Entry.new(0_u64, 0_u64, 0_u32, 0_u64, 0_u64, 0_u64, flags)
+    write_exact_index_with_entries(path, [entry])
+  end
+
+  def write_exact_index_with_entries(path : String, entries : Array(Fqix::Entry), name_table : Bytes = Bytes.empty)
     entries_offset = Fqix::IndexFormat::V2_HEADER_SIZE
-    name_table_offset = entries_offset + Fqix::IndexFormat::ENTRY_SIZE
-    windows_offset = name_table_offset
+    name_table_offset = entries_offset + entries.size.to_u64 * Fqix::IndexFormat::ENTRY_SIZE
+    windows_offset = name_table_offset + name_table.size.to_u64
     File.open(path, "wb") do |io|
       io.write(Fqix::IndexFormat::MAGIC.to_slice)
       Fqix::IndexFormat.write_version(io, Fqix::IndexFormat::EXACT_VERSION)
@@ -115,22 +120,27 @@ module SpecIndexSupport
         b.u8 1_u8
         b.u8 0_u8
         b.u64 0_u64
-        b.u64 1_u64
+        b.u64 entries.size.to_u64
         b.u64 0_u64
-        b.u64 1_u64
+        b.u64 entries.size.to_u64
         b.u32 0_u32
-        b.u64 0_u64
+        b.u64 name_table.size.to_u64
         b.u64 entries_offset
         b.u64 name_table_offset
         b.u64 windows_offset
-        b.u64 0_u64
-        b.u64 0_u64
-        b.u32 0_u32
-        b.u64 0_u64
-        b.u64 0_u64
-        b.u64 0_u64
-        b.u32 flags
       end
+      entries.each do |entry|
+        Fqix::BinaryIO.write(io) do |b|
+          b.u64 entry.name_hash
+          b.u64 entry.name_offset
+          b.u32 entry.name_length
+          b.u64 entry.record_number
+          b.u64 entry.record_offset
+          b.u64 entry.record_size
+          b.u32 entry.flags
+        end
+      end
+      io.write(name_table)
     end
   end
 
@@ -367,6 +377,39 @@ describe Fqix::Index do
       end
     end
 
+    it "rejects exact entries whose name table reference is out of range" do
+      index_path = File.tempname("fqix-bad-entry-name-ref-spec", ".fqix")
+      entry = Fqix::Entry.new(0_u64, 3_u64, 2_u32, 0_u64, 0_u64, 0_u64)
+
+      begin
+        SpecIndexSupport.write_exact_index_with_entries(index_path, [entry], Bytes[1_u8, 2_u8, 3_u8, 4_u8])
+
+        expect_raises(Fqix::Error, "invalid fqix index name table reference") do
+          Fqix::Index.read(index_path)
+        end
+      ensure
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
+    it "rejects exact entry tables that are not sorted" do
+      index_path = File.tempname("fqix-unsorted-entry-table-spec", ".fqix")
+      entries = [
+        Fqix::Entry.new(2_u64, 0_u64, 0_u32, 0_u64, 0_u64, 0_u64),
+        Fqix::Entry.new(1_u64, 0_u64, 0_u32, 1_u64, 0_u64, 0_u64),
+      ]
+
+      begin
+        SpecIndexSupport.write_exact_index_with_entries(index_path, entries)
+
+        expect_raises(Fqix::Error, "invalid fqix index entry order") do
+          Fqix::Index.read(index_path)
+        end
+      ensure
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
     it "rejects a corrupt index with an impossible entry count" do
       index_path = File.tempname("fqix-bad-name-count-spec", ".fqix")
 
@@ -553,10 +596,16 @@ describe Fqix::Index do
       end
     end
 
-    it "does not expose partial sparse matches when the scan limit cuts through a record" do
+    it "does not expose partial sparse matches at scan-limit line boundaries" do
       gz_path = File.tempname("fqix-sparse-partial-limit-spec", ".fastq.gz")
       records = [
         {"read00", "@read00\nAAAA\n+\nIIII\n"},
+      ]
+      limits = [
+        {"header", 4_u64},
+        {"sequence", 10_u64},
+        {"plus", 14_u64},
+        {"quality", 17_u64},
       ]
 
       begin
@@ -564,18 +613,21 @@ describe Fqix::Index do
         index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse)
         reader = Fqix::Reader.new(gz_path, index)
 
-        result = reader.fetch_matches_with_status("read00", 16_u64)
-        result.status.should eq(Fqix::Reader::FetchStatus::ScanLimitReached)
-        result.matches.should be_empty
+        limits.each do |_, limit|
+          result = reader.fetch_matches_with_status("read00", limit)
+          result.status.should eq(Fqix::Reader::FetchStatus::ScanLimitReached)
+          result.matches.should be_empty
+
+          expect_raises(Fqix::Error, "scan limit reached before lookup completed: read00") do
+            reader.fetch_matches("read00", limit)
+          end
+        end
 
         expect_raises(Fqix::Error, "scan limit reached before lookup completed: read00") do
-          reader.fetch_matches("read00", 16_u64)
+          reader.fetch_all("read00", 17_u64)
         end
         expect_raises(Fqix::Error, "scan limit reached before lookup completed: read00") do
-          reader.fetch_all("read00", 16_u64)
-        end
-        expect_raises(Fqix::Error, "scan limit reached before lookup completed: read00") do
-          reader.fetch("read00", 16_u64)
+          reader.fetch("read00", 17_u64)
         end
       ensure
         File.delete(gz_path) if File.exists?(gz_path)

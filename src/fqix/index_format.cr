@@ -320,6 +320,7 @@ module Fqix
       nentries.times do
         entries << read_entry(io)
       end
+      validate_exact_entries!(entries, name_table_size)
 
       name_table = read_v2_name_table(io, name_table_size, name_table_offset, windows_offset)
       checkpoint_metas = read_checkpoint_metas(io, ncheckpoints, windows_offset)
@@ -426,6 +427,22 @@ module Fqix
         if entry.delta != entry.uncompressed_offset - checkpoint.out_offset
           raise Error.new("invalid fqix sparse name checkpoint reference")
         end
+      end
+    end
+
+    private def validate_exact_entries!(entries : Array(Entry), name_table_size : UInt64) : Nil
+      previous = nil.as(Entry?)
+      entries.each do |entry|
+        if entry.name_offset > name_table_size || entry.name_length.to_u64 > name_table_size - entry.name_offset
+          raise Error.new("invalid fqix index name table reference")
+        end
+
+        if prev = previous
+          if entry.name_hash < prev.name_hash || (entry.name_hash == prev.name_hash && entry.record_number < prev.record_number)
+            raise Error.new("invalid fqix index entry order")
+          end
+        end
+        previous = entry
       end
     end
 

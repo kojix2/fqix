@@ -203,24 +203,31 @@ describe Fqix::CLI do
       end
     end
 
-    it "reports sparse scan limit instead of not found" do
+    it "reports sparse scan limit without emitting partial records" do
       File.tempfile("fqix-cli-sparse-scan-limit", ".fastq.gz") do |gzip_file|
         gz_path = gzip_file.path
         index_path = "#{gz_path}.fqix"
         records = [
           "@read00\nAAAA\n+\nIIII\n",
-          "@read01\nCCCC\n+\nIIII\n",
+        ]
+        limits = [
+          4_u64,  # header
+          10_u64, # sequence
+          14_u64, # plus
+          17_u64, # quality
         ]
         gzip_file.close
         SpecCliSupport.write_gzip_fastq(gz_path, records)
 
         SpecCliSupport.run_cli(["index", gz_path]).first.should eq(0)
 
-        status, stdout, stderr = SpecCliSupport.run_cli(["get", "--scan-limit", "1", gz_path, "read01"])
-        status.should eq(2)
-        stdout.should be_empty
-        stderr.should contain("scan limit reached")
-        stderr.should_not contain("not found")
+        limits.each do |limit|
+          status, stdout, stderr = SpecCliSupport.run_cli(["get", "--scan-limit", limit.to_s, gz_path, "read00"])
+          status.should eq(2)
+          stdout.should be_empty
+          stderr.should contain("scan limit reached")
+          stderr.should_not contain("not found")
+        end
       ensure
         File.delete(index_path) if index_path && File.exists?(index_path)
       end
