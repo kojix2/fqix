@@ -69,9 +69,12 @@ module Fqix
             build_temp_index(input, output, span, consumer)
           end
         end
+      rescue ex : Error
+        File.delete(tmp) if File.exists?(tmp)
+        raise ex
       rescue ex
         File.delete(tmp) if File.exists?(tmp)
-        raise Error.new(ex.message || "zran build failed")
+        raise Error.new(ex.message || "zran build failed", cause: ex)
       end
 
       tmp
@@ -116,9 +119,12 @@ module Fqix
           sink = ->(chunk : Bytes) { output.write(chunk); true }
           limit_reached = run_extract(gz_path, checkpoint, skip, max_out, sink)
         end
+      rescue ex : Error
+        File.delete(tmp) if File.exists?(tmp)
+        raise ex
       rescue ex
         File.delete(tmp) if File.exists?(tmp)
-        raise Error.new(ex.message || "zran extract failed")
+        raise Error.new(ex.message || "zran extract failed", cause: ex)
       end
 
       ExtractResult.new(tmp, limit_reached)
@@ -156,7 +162,7 @@ module Fqix
     rescue ex : Error
       raise ex
     rescue ex
-      raise Error.new(ex.message || "zran extract failed")
+      raise Error.new(ex.message || "zran extract failed", cause: ex)
     end
 
     private def self.prime_raw_checkpoint(input : File, stream : LibZ::ZStream*, checkpoint : Checkpoint)

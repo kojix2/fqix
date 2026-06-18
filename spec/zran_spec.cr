@@ -146,6 +146,35 @@ module SpecZranSupport
 end
 
 describe Fqix::Zran do
+  it "preserves Fqix::Error raised by a build consumer" do
+    gz_path = File.tempname("fqix-zran-consumer-error-spec", ".fastq.gz")
+    original = Fqix::Error.new("consumer failed")
+
+    begin
+      File.open(gz_path, "wb") do |file|
+        Compress::Gzip::Writer.open(file) do |gzip|
+          gzip << "@read1\nACGT\n+\nIIII\n"
+        end
+      end
+
+      raised = expect_raises(Fqix::Error, "consumer failed") do
+        Fqix::Zran.build_to_temp(gz_path, 1024_u64, ->(_chunk : Bytes) { raise original })
+      end
+      raised.should be(original)
+      raised.cause.should be_nil
+    ensure
+      File.delete(gz_path) if File.exists?(gz_path)
+    end
+  end
+
+  it "keeps the original cause when wrapping non-Fqix build errors" do
+    raised = expect_raises(Fqix::Error) do
+      Fqix::Zran.build_to_temp("/definitely/missing/fqix.fastq.gz", 1024_u64)
+    end
+
+    raised.cause.should be_a(File::Error)
+  end
+
   it "rejects a corrupt temporary index with an impossible checkpoint count" do
     tmp = File.tempname("fqix-zran-bad-count-spec", ".tmp")
 
