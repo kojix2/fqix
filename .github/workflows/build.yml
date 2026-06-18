@@ -1,0 +1,124 @@
+name: build
+
+on:
+  push:
+    branches: ["*"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    env:
+      BIN: fqix
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: latest
+
+      - name: Set version variables
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION=${{ github.ref_name }}
+          else
+            VERSION="build-$(date +%Y%m%d-%H%M%S)"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        if: matrix.target != 'x86_64-unknown-linux-musl' && matrix.target != 'x86_64-pc-windows-msvc'
+        run: make test
+
+      - name: Build static binary on Linux
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        shell: bash
+        run: |
+          docker run -d --name alpine -v "$(pwd):/workspace" -w /workspace crystallang/crystal:latest-alpine tail -f /dev/null
+          docker exec alpine apk add --no-cache build-base zlib-dev zlib-static
+          docker exec alpine make release=1 CRYSTAL_BUILD_FLAGS="--release --static" LDFLAGS="-static -lz"
+          docker exec alpine chmod +x "bin/$BIN"
+          docker exec alpine file "bin/$BIN"
+          docker exec alpine sh -c "ldd bin/$BIN || true"
+          docker exec alpine "bin/$BIN" --help
+          PKG="$BIN-$VERSION-${{ matrix.target }}"
+          mkdir -p "$PKG"
+          cp "bin/$BIN" "$PKG/"
+          cp LICENSE README.md "$PKG/"
+          tar czf "$PKG.tar.gz" "$PKG"
+
+      - name: Build portable binary on macOS
+        if: endsWith(matrix.target, 'apple-darwin')
+        shell: bash
+        run: |
+          brew update
+          brew install bdw-gc pcre2
+          unset PKG_CONFIG_PATH
+          ln -sf "$(brew ls bdw-gc | grep '/libgc\.a$' | head -n 1)" ./libgc.a
+          ln -sf "$(brew ls pcre2 | grep '/libpcre2-8\.a$' | head -n 1)" ./libpcre2-8.a
+          STATIC_LIBS="-L $(pwd) $(pwd)/libgc.a $(pwd)/libpcre2-8.a -lz"
+          mkdir -p bin
+          crystal build --release src/cli.cr -o "bin/$BIN" --link-flags "$STATIC_LIBS"
+          chmod +x "bin/$BIN"
+          otool -L "bin/$BIN"
+          if otool -L "bin/$BIN" | grep -E '/opt/homebrew|/usr/local/Cellar|/usr/local/opt'; then
+            echo "Error: Homebrew dependencies detected"
+            exit 1
+          fi
+          file "bin/$BIN"
+          "bin/$BIN" --help
+          PKG="$BIN-$VERSION-${{ matrix.target }}"
+          mkdir -p "$PKG"
+          cp "bin/$BIN" "$PKG/"
+          cp LICENSE README.md "$PKG/"
+          tar czf "$PKG.tar.gz" "$PKG"
+
+      - name: Build static binary on Windows
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          mkdir bin
+          $exe = "bin/$env:BIN.exe"
+          crystal build --release src/cli.cr -o $exe
+          & ".\$exe" --help
+          $pkg = "$env:BIN-$env:VERSION-${{ matrix.target }}"
+          mkdir $pkg
+          Copy-Item $exe "$pkg/"
+          Copy-Item "LICENSE" "$pkg/"
+          Copy-Item "README.md" "$pkg/"
+          Compress-Archive -Path "$pkg/*" -DestinationPath "$pkg.zip"
+
+      - name: Upload artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: fqix-${{ matrix.target }}
+          path: |
+            fqix-*.tar.gz
+            fqix-*.zip
+
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            fqix-*.tar.gz
+            fqix-*.zip

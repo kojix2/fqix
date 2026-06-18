@@ -2,7 +2,7 @@ CRYSTAL ?= crystal
 CC ?= cc
 BUILD_DIR ?= build
 BIN_DIR ?= bin
-LDFLAGS ?= -lz
+LDFLAGS ?=
 SPEC_ZRAN_OBJECT ?= $(BUILD_DIR)/spec-zran.o
 SPEC_ZRAN_LINK_OBJECT := $(abspath $(SPEC_ZRAN_OBJECT))
 

@@ -17,7 +17,7 @@ require "lib_z"
 require "./binary_io"
 require "./error"
 
-@[Link("z")]
+# Add zran APIs to Crystal's stdlib LibZ binding.
 lib LibZ
   fun inflatePrime(stream : ZStream*, bits : Int32, value : Int32) : Error
   fun inflateReset2(stream : ZStream*, window_bits : Int32) : Error

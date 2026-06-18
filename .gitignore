@@ -1,4 +1,6 @@
 /bin/
+/build/
+/.crystal-cache/
 /lib/
 /.shards/
 /docs/api/
