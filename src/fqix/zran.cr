@@ -1,3 +1,18 @@
+# zran-style random access support for gzip streams.
+#
+# This file implements zran-derived checkpointing and extraction for fqix.
+# The overall fqix project is licensed under the MIT License, but this
+# zran-related implementation is distributed under the zlib License.
+#
+# The design is based on Mark Adler's zran example from zlib:
+#
+#   Copyright (C) 2005, 2012, 2018, 2023, 2024, 2025 Mark Adler
+#   For conditions of distribution and use, see the zlib license.
+#
+# fqix-specific Crystal implementation:
+#
+#   Copyright (c) 2026 Kojix2
+#
 require "lib_z"
 require "./binary_io"
 require "./error"
