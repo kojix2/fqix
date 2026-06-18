@@ -30,135 +30,42 @@ The binary is written to:
 bin/fqix
 ```
 
-## Quick Start
+## Usage
 
-Given `reads.fastq.gz`:
-
-1. Build an index
+Build the default index next to a FASTQ file:
 
 ```sh
 fqix index reads.fastq.gz
 ```
 
-This creates:
-
-```text
-reads.fastq.gz.fqix
-```
-
-2. Fetch by read name
-
-```sh
-fqix get reads.fastq.gz read_001
-```
-
-You can request multiple reads at once:
-
-```sh
-fqix get reads.fastq.gz read_001 read_002 read_003
-```
-
-Matching FASTQ records are written to stdout:
+Fetch one or more reads by name. Matching FASTQ records are written to stdout:
 
 ```sh
 fqix get reads.fastq.gz read_001 read_002 > hits.fastq
 ```
 
-## Commands
-
-### `fqix index`
-
-Build a `.fqix` index from a `.fastq.gz` file.
-
-```sh
-fqix index reads.fastq.gz
-```
-
-Specify an output path:
+Useful variants:
 
 ```sh
 fqix index -o reads.fqix reads.fastq.gz
-```
-
-### `fqix get`
-
-Fetch FASTQ records by read name.
-
-```sh
-fqix get reads.fastq.gz read_001
-```
-
-Use an explicit index path:
-
-```sh
 fqix get -i reads.fqix reads.fastq.gz read_001
-```
-
-If any read is missing, a message is written to stderr and the exit code is `2`.
-
-### `fqix show`
-
-Show index metadata.
-
-```sh
 fqix show reads.fastq.gz.fqix
-```
-
-Print stored read-name anchors:
-
-```sh
 fqix show --anchors reads.fastq.gz.fqix
-```
-
-### `fqix check`
-
-Check whether an index still matches its source `.fastq.gz`.
-
-```sh
 fqix check reads.fastq.gz
 ```
 
-Example output:
-
-```text
-ok	reads.fastq.gz.fqix
-```
-
-If the source file has changed:
-
-```text
-stale	reads.fastq.gz.fqix
-```
-
-## Common Options
-
-Tune index density:
+Index density and lookup scan limit can be tuned when needed:
 
 ```sh
 fqix index --checkpoint-span 4194304 --name-interval 1024 reads.fastq.gz
-```
-
-- `--checkpoint-span`: target spacing between gzip restart points, in uncompressed bytes.
-- `--name-interval`: number of FASTQ records between stored read-name anchors.
-
-Increase the forward scan limit during lookup:
-
-```sh
 fqix get --scan-limit 16777216 reads.fastq.gz read_001
 ```
 
-If lookup reports `scan limit reached`, increasing `--scan-limit` may help.
+Run `fqix --help` or `fqix <command> --help` for the full option list. If any requested read is missing, `fqix get` writes a message to stderr and exits with code `2`.
 
 ## FASTQ Assumptions
 
-`fqix` currently expects:
-
-- `.fastq.gz` input
-- records sorted by read name
-- four-line FASTQ records
-- no wrapped multiline sequence or quality fields
-
-Example:
+`fqix` expects name-sorted `.fastq.gz` files with ordinary four-line FASTQ records:
 
 ```text
 @read_001 optional comment
@@ -167,7 +74,7 @@ ACGTACGT
 IIIIIIII
 ```
 
-The read name is parsed from after `@` up to the first space or tab. In this example, it is `read_001`.
+Multiline sequence or quality fields are not supported. The read name is the text after `@` up to the first space or tab.
 
 ## How It Works
 

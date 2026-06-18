@@ -14,6 +14,7 @@ requested read is found.
 ## Documentation
 
 - [Usage](usage.html)
+- [FQIX file format](fqix-format.html)
 - [License](license.html)
 - [API documentation](api/)
 
