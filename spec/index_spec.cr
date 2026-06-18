@@ -25,11 +25,11 @@ end
 
 describe Fqix::Fastq do
   it "parses a FASTQ read name" do
-    Fqix::Fastq.read_name("@read1 some comment\n").should eq("read1")
+    Fqix::Fastq.name_from_header("@read1 some comment\n").should eq("read1")
   end
 
   it "parses a FASTQ read name before tab-separated comments" do
-    Fqix::Fastq.read_name("@read2\tmore comment\n").should eq("read2")
+    Fqix::Fastq.name_from_header("@read2\tmore comment\n").should eq("read2")
   end
 end
 

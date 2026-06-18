@@ -32,72 +32,39 @@ module Fqix
 
   # Builds the sparse read-name anchor list while the gzip stream is inflated
   # once for the zran checkpoint pass. Decompressed bytes arrive in arbitrary
-  # chunks (split across deflate blocks and gzip members), so this scans for
-  # line boundaries incrementally and tracks the uncompressed offset of each
-  # record without ever materializing the sequence/quality lines.
+  # chunks (split across deflate blocks and gzip members), so this records
+  # header bytes and record offsets without materializing sequence/quality lines.
   class NameTableBuilder
-    NEWLINE = '\n'.ord.to_u8
-
     record Anchor, name : String, offset : UInt64
 
     getter anchors : Array(Anchor)
 
     def initialize(@name_interval : UInt32)
       @anchors = [] of Anchor
-      @offset = 0_u64       # total uncompressed bytes seen so far
-      @line_start = 0_u64   # offset where the current line began
-      @record_start = 0_u64 # offset where the current record began
-      @line_in_record = 0   # 0=header, 1=seq, 2=plus, 3=qual
       @record_index = 0_u64
       @last_name = nil.as(String?)
-      @current_name = ""       # name of the record currently being assembled
       @header = IO::Memory.new # bytes of the current header line (line 0 only)
-      @pending = false         # bytes buffered for the current unterminated line
+      @framer = Fastq::StreamParser.new(
+        ->(segment : Bytes, line_in_record : Int32, _line_start : UInt64) {
+          @header.write(segment) if line_in_record == 0
+        },
+        ->(record_start : UInt64) {
+          complete_record(Fastq.name_from_header(@header.to_s), record_start)
+          @header.clear
+          true
+        }
+      )
     end
 
     def feed(chunk : Bytes) : Nil
-      i = 0
-      size = chunk.size
-      while i < size
-        if nl = chunk.index(NEWLINE, i)
-          stop = nl + 1
-          @header.write(chunk[i, stop - i]) if @line_in_record == 0
-          @offset += stop - i
-          finalize_line
-          i = stop
-        else
-          @header.write(chunk[i, size - i]) if @line_in_record == 0
-          @offset += size - i
-          @pending = true
-          i = size
-        end
-      end
+      @framer.feed(chunk)
     end
 
     def finish : Nil
-      finalize_line if @pending
-      raise Error.new("truncated FASTQ record at end of stream") if @line_in_record != 0
+      @framer.finish
     end
 
-    private def finalize_line : Nil
-      if @line_in_record == 0
-        @record_start = @line_start
-        @current_name = Fastq.read_name(@header.to_s)
-        @header.clear
-      end
-
-      @line_in_record += 1
-      if @line_in_record == 4
-        complete_record
-        @line_in_record = 0
-      end
-
-      @pending = false
-      @line_start = @offset
-    end
-
-    private def complete_record : Nil
-      name = @current_name
+    private def complete_record(name : String, record_start : UInt64) : Nil
       if last = @last_name
         if Order.compare(name, last) < 0
           raise Error.new("FASTQ is not sorted by read name near #{name.inspect} < #{last.inspect}")
@@ -106,7 +73,7 @@ module Fqix
       @last_name = name
 
       if @record_index == 0 || @record_index % @name_interval == 0
-        @anchors << Anchor.new(name, @record_start)
+        @anchors << Anchor.new(name, record_start)
       end
       @record_index += 1
     end

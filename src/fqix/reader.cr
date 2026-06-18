@@ -61,60 +61,36 @@ module Fqix
     # extractor to stop once the query name is found or passed (records are
     # sorted by name). Only the matching record's bytes are materialized.
     private class RecordScanner
-      NEWLINE = '\n'.ord.to_u8
-
       getter? passed = false
       getter record : String? = nil
 
       def initialize(@query : String)
         @buf = IO::Memory.new    # full bytes of the record being assembled
         @header = IO::Memory.new # bytes of the current header line only
-        @line_in_record = 0
-        @pending = false # bytes buffered for an unterminated line
+        @framer = Fastq::StreamParser.new(
+          ->(segment : Bytes, line_in_record : Int32, _line_start : UInt64) {
+            @buf.write(segment)
+            @header.write(segment) if line_in_record == 0
+          },
+          ->(_record_start : UInt64) {
+            decide
+            record.nil? && !passed?
+          }
+        )
       end
 
       # Returns false once a decision is reached, to stop extraction early.
       def feed(chunk : Bytes) : Bool
-        i = 0
-        size = chunk.size
-        while i < size
-          if nl = chunk.index(NEWLINE, i)
-            stop = nl + 1
-            capture(chunk[i, stop - i])
-            i = stop
-            return false unless finalize_line
-          else
-            capture(chunk[i, size - i])
-            @pending = true
-            i = size
-          end
-        end
-        true
+        @framer.feed(chunk)
       end
 
       # Flush a final line that ended the stream without a trailing newline.
       def finish : Nil
-        finalize_line if @pending && record.nil? && !passed?
-      end
-
-      private def capture(seg : Bytes) : Nil
-        @buf.write(seg)
-        @header.write(seg) if @line_in_record == 0
-      end
-
-      # Returns false when a decision (found/passed) is reached.
-      private def finalize_line : Bool
-        @pending = false
-        @line_in_record += 1
-        return true unless @line_in_record == 4
-
-        @line_in_record = 0
-        decide
-        record.nil? && !passed?
+        @framer.finish(strict: false) if record.nil? && !passed?
       end
 
       private def decide : Nil
-        name = Fastq.read_name(@header.to_s)
+        name = Fastq.name_from_header(@header.to_s)
         order = Order.compare(name, @query)
         if order == 0 && name == @query
           @record = @buf.to_s # exact match within the equal-ordered run
