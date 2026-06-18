@@ -7,9 +7,13 @@ It is intended for name-sorted FASTQ files. It does not require re-compressing
 with bgzip.
 
 The index combines zran-style gzip restart checkpoints with a sparse read-name
-index. Lookup uses the sparse read-name index to find a nearby read, then
-resumes gzip inflation from the nearest checkpoint and scans forward until the
-requested read is found.
+index. Lookup finds a nearby read-name anchor, resumes gzip inflation from the
+nearest checkpoint, and scans forward until the requested read is found.
+
+## Links
+
+- [GitHub](https://github.com/kojix2/fqix)
+- [Releases](https://github.com/kojix2/fqix/releases)
 
 ## Documentation
 
