@@ -25,19 +25,11 @@ end
 
 describe Fqix::Fastq do
   it "parses a FASTQ read name" do
-    Fqix::Fastq.parse_read_name("@read1 some comment\n").should eq("read1")
+    Fqix::Fastq.read_name("@read1 some comment\n").should eq("read1")
   end
 
   it "parses a FASTQ read name before tab-separated comments" do
-    Fqix::Fastq.parse_read_name("@read2\tmore comment\n").should eq("read2")
-  end
-
-  it "reads raw lines with newlines preserved" do
-    io = IO::Memory.new("abc\ndef")
-
-    Fqix::Fastq.gets_raw(io).should eq("abc\n")
-    Fqix::Fastq.gets_raw(io).should eq("def")
-    Fqix::Fastq.gets_raw(io).should be_nil
+    Fqix::Fastq.read_name("@read2\tmore comment\n").should eq("read2")
   end
 end
 

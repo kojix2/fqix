@@ -114,7 +114,7 @@ module Fqix
       end
 
       private def decide : Nil
-        name = Fastq.parse_read_name(@header.to_s)
+        name = Fastq.read_name(@header.to_s)
         order = Order.compare(name, @query)
         if order == 0 && name == @query
           @record = @buf.to_s # exact match within the equal-ordered run

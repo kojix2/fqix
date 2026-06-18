@@ -81,7 +81,7 @@ module Fqix
     private def finalize_line : Nil
       if @line_in_record == 0
         @record_start = @line_start
-        @current_name = Fastq.parse_read_name(@header.to_s)
+        @current_name = Fastq.read_name(@header.to_s)
         @header.clear
       end
 
