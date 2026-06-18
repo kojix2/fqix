@@ -552,6 +552,35 @@ describe Fqix::Index do
         File.delete(gz_path) if File.exists?(gz_path)
       end
     end
+
+    it "does not expose partial sparse matches when the scan limit cuts through a record" do
+      gz_path = File.tempname("fqix-sparse-partial-limit-spec", ".fastq.gz")
+      records = [
+        {"read00", "@read00\nAAAA\n+\nIIII\n"},
+      ]
+
+      begin
+        SpecIndexSupport.write_gzip_member(gz_path, records)
+        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse)
+        reader = Fqix::Reader.new(gz_path, index)
+
+        result = reader.fetch_matches_with_status("read00", 16_u64)
+        result.status.should eq(Fqix::Reader::FetchStatus::ScanLimitReached)
+        result.matches.should be_empty
+
+        expect_raises(Fqix::Error, "scan limit reached before lookup completed: read00") do
+          reader.fetch_matches("read00", 16_u64)
+        end
+        expect_raises(Fqix::Error, "scan limit reached before lookup completed: read00") do
+          reader.fetch_all("read00", 16_u64)
+        end
+        expect_raises(Fqix::Error, "scan limit reached before lookup completed: read00") do
+          reader.fetch("read00", 16_u64)
+        end
+      ensure
+        File.delete(gz_path) if File.exists?(gz_path)
+      end
+    end
   end
 
   context "exact indexes" do

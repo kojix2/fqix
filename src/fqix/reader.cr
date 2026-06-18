@@ -46,6 +46,7 @@ module Fqix
 
     def fetch(name : String, scan_bytes : UInt64 = DEFAULT_SCAN_BYTES) : String?
       result = fetch_with_status(name, scan_bytes)
+      raise Error.new("scan limit reached before lookup completed: #{name}") if result.status.scan_limit_reached?
       result.status.found? ? result.record : nil
     end
 
@@ -58,7 +59,9 @@ module Fqix
     end
 
     def fetch_matches(name : String, scan_bytes : UInt64 = DEFAULT_SCAN_BYTES) : Array(Tuple(UInt64, String))
-      fetch_matches_with_status(name, scan_bytes).matches
+      result = fetch_matches_with_status(name, scan_bytes)
+      raise Error.new("scan limit reached before lookup completed: #{name}") if result.status.scan_limit_reached?
+      result.matches
     end
 
     def fetch_matches_with_status(name : String, scan_bytes : UInt64 = DEFAULT_SCAN_BYTES) : FetchMatchesResult
@@ -98,7 +101,7 @@ module Fqix
       cp = @index.checkpoint(entry.checkpoint_id.to_i)
       scanner = RecordScanner.new(normalized, entry.uncompressed_offset, @index.order_mode)
       limit_reached = Zran.extract_to(@gz_path, cp, entry.delta, scan_bytes, ->(chunk : Bytes) { scanner.feed(chunk) })
-      scanner.finish
+      scanner.finish unless limit_reached
       scanner.result(limit_reached)
     end
 
