@@ -56,25 +56,25 @@ module SpecIndexSupport
         else
           Fqix::IndexFormat::HEADER_SIZE + source_path_len + nnames * Fqix::IndexFormat::ENTRY_SIZE
         end
-      Fqix::BinaryIO.write(io) do |b|
-        b.u16 flags
-        b.u16 padding
-        b.u64 0_u64
-        b.i64 0_i64
-        b.u64 1_u64
-        b.u8 Fqix::HashAlgorithm::Fnv1a64.value
-        b.u8 Fqix::NameMode::FirstToken.value
-        b.u8 1_u8
-        b.u8 0_u8
-        b.u64 0_u64
-        b.u64 0_u64
-        b.u64 ncheckpoints
-        b.u64 nnames
-        b.u32 source_path_len
-        b.u64 0_u64
-        b.u64 Fqix::IndexFormat::HEADER_SIZE + source_path_len
-        b.u64 name_table_offset
-        b.u64 windows_offset
+      Fqix::BinaryIO.write(io) do
+        u16 flags
+        u16 padding
+        u64 0_u64
+        i64 0_i64
+        u64 1_u64
+        u8 Fqix::HashAlgorithm::Fnv1a64.value
+        u8 Fqix::NameMode::FirstToken.value
+        u8 1_u8
+        u8 0_u8
+        u64 0_u64
+        u64 0_u64
+        u64 ncheckpoints
+        u64 nnames
+        u32 source_path_len
+        u64 0_u64
+        u64 Fqix::IndexFormat::HEADER_SIZE + source_path_len
+        u64 name_table_offset
+        u64 windows_offset
       end
     end
   end
@@ -87,30 +87,30 @@ module SpecIndexSupport
     File.open(path, "wb") do |io|
       io.write(Fqix::IndexFormat::MAGIC.to_slice)
       Fqix::IndexFormat.write_version(io, Fqix::IndexFormat::EXACT_VERSION)
-      Fqix::BinaryIO.write(io) do |b|
-        b.u16 0_u16
-        b.u16 0_u16
-        b.u64 0_u64
-        b.i64 0_i64
-        b.u64 1_u64
-        b.u8 Fqix::HashAlgorithm::Fnv1a64.value
-        b.u8 Fqix::NameMode::FirstToken.value
-        b.u8 1_u8
-        b.u8 0_u8
-        b.u64 0_u64
-        b.u64 0_u64
-        b.u64 1_u64
-        b.u64 0_u64
-        b.u32 0_u32
-        b.u64 0_u64
-        b.u64 Fqix::IndexFormat::V2_HEADER_SIZE
-        b.u64 Fqix::IndexFormat::V2_HEADER_SIZE
-        b.u64 windows_offset
-        b.u64 0_u64
-        b.u64 0_u64
-        b.u8 bits
-        b.u32 have
-        b.bytes Bytes.new(window_bytes)
+      Fqix::BinaryIO.write(io) do
+        u16 0_u16
+        u16 0_u16
+        u64 0_u64
+        i64 0_i64
+        u64 1_u64
+        u8 Fqix::HashAlgorithm::Fnv1a64.value
+        u8 Fqix::NameMode::FirstToken.value
+        u8 1_u8
+        u8 0_u8
+        u64 0_u64
+        u64 0_u64
+        u64 1_u64
+        u64 0_u64
+        u32 0_u32
+        u64 0_u64
+        u64 Fqix::IndexFormat::V2_HEADER_SIZE
+        u64 Fqix::IndexFormat::V2_HEADER_SIZE
+        u64 windows_offset
+        u64 0_u64
+        u64 0_u64
+        u8 bits
+        u32 have
+        bytes Bytes.new(window_bytes)
       end
     end
   end
@@ -127,35 +127,35 @@ module SpecIndexSupport
     File.open(path, "wb") do |io|
       io.write(Fqix::IndexFormat::MAGIC.to_slice)
       Fqix::IndexFormat.write_version(io, Fqix::IndexFormat::EXACT_VERSION)
-      Fqix::BinaryIO.write(io) do |b|
-        b.u16 0_u16
-        b.u16 0_u16
-        b.u64 0_u64
-        b.i64 0_i64
-        b.u64 1_u64
-        b.u8 Fqix::HashAlgorithm::Fnv1a64.value
-        b.u8 Fqix::NameMode::FirstToken.value
-        b.u8 1_u8
-        b.u8 0_u8
-        b.u64 0_u64
-        b.u64 entries.size.to_u64
-        b.u64 0_u64
-        b.u64 entries.size.to_u64
-        b.u32 0_u32
-        b.u64 name_table.size.to_u64
-        b.u64 entries_offset
-        b.u64 name_table_offset
-        b.u64 windows_offset
+      Fqix::BinaryIO.write(io) do
+        u16 0_u16
+        u16 0_u16
+        u64 0_u64
+        i64 0_i64
+        u64 1_u64
+        u8 Fqix::HashAlgorithm::Fnv1a64.value
+        u8 Fqix::NameMode::FirstToken.value
+        u8 1_u8
+        u8 0_u8
+        u64 0_u64
+        u64 entries.size.to_u64
+        u64 0_u64
+        u64 entries.size.to_u64
+        u32 0_u32
+        u64 name_table.size.to_u64
+        u64 entries_offset
+        u64 name_table_offset
+        u64 windows_offset
       end
       entries.each do |entry|
-        Fqix::BinaryIO.write(io) do |b|
-          b.u64 entry.name_hash
-          b.u64 entry.name_offset
-          b.u32 entry.name_length
-          b.u64 entry.record_number
-          b.u64 entry.record_offset
-          b.u64 entry.record_size
-          b.u32 entry.flags
+        Fqix::BinaryIO.write(io) do
+          u64 entry.name_hash
+          u64 entry.name_offset
+          u32 entry.name_length
+          u64 entry.record_number
+          u64 entry.record_offset
+          u64 entry.record_size
+          u32 entry.flags
         end
       end
       io.write(name_table)
@@ -182,36 +182,36 @@ module SpecIndexSupport
 
       io.write(Fqix::IndexFormat::MAGIC_V1.to_slice)
       Fqix::IndexFormat.write_version(io, Fqix::FormatVersion.new(Fqix::IndexFormat::SPARSE_MAJOR, 0_u16))
-      Fqix::BinaryIO.write(io) do |b|
-        b.u16 0_u16
-        b.u16 0_u16
-        b.u64 source_size
-        b.i64 source_mtime
-        b.u64 checkpoint_span
-        b.u32 name_interval
-        b.u32 source_path_bytes.size.to_u32
-        b.u64 checkpoint_metas.size.to_u64
-        b.u64 names.size.to_u64
-        b.u64 windows_offset
-        b.u64 record_count
+      Fqix::BinaryIO.write(io) do
+        u16 0_u16
+        u16 0_u16
+        u64 source_size
+        i64 source_mtime
+        u64 checkpoint_span
+        u32 name_interval
+        u32 source_path_bytes.size.to_u32
+        u64 checkpoint_metas.size.to_u64
+        u64 names.size.to_u64
+        u64 windows_offset
+        u64 record_count
       end
       io.write(source_path_bytes)
       checkpoint_metas.each do |checkpoint|
-        Fqix::BinaryIO.write(io) do |b|
-          b.u64 checkpoint.out_offset
-          b.u64 checkpoint.in_offset
-          b.u8 checkpoint.bits
-          b.u32 checkpoint.have
+        Fqix::BinaryIO.write(io) do
+          u64 checkpoint.out_offset
+          u64 checkpoint.in_offset
+          u8 checkpoint.bits
+          u32 checkpoint.have
         end
       end
       names.each do |entry|
         name_bytes = entry.name.to_slice
-        Fqix::BinaryIO.write(io) do |b|
-          b.u16 name_bytes.size.to_u16
-          b.bytes name_bytes
-          b.u64 entry.uncompressed_offset
-          b.u64 entry.checkpoint_id
-          b.u64 entry.delta
+        Fqix::BinaryIO.write(io) do
+          u16 name_bytes.size.to_u16
+          bytes name_bytes
+          u64 entry.uncompressed_offset
+          u64 entry.checkpoint_id
+          u64 entry.delta
         end
       end
       windows.each { |window| io.write(window) }

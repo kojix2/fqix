@@ -273,46 +273,50 @@ module Fqix
       raise Error.new("too many arguments") unless args.empty?
 
       idx = Index.read(path)
-      if opt.raw?
-        case idx.mode
-        in .sparse?
-          idx.names.each do |entry|
-            @out.puts [
-              entry.name,
-              entry.uncompressed_offset,
-              entry.checkpoint_id,
-              entry.delta,
-            ].join('\t')
-          end
-        in .exact?
-          idx.entries.each do |entry|
-            @out.puts [
-              idx.entry_name(entry),
-              entry.name_hash,
-              entry.record_number,
-              entry.record_offset,
-              entry.record_size,
-            ].join('\t')
-          end
-        end
-      else
-        @out.puts "version\t#{idx.format_version}"
-        @out.puts "mode\t#{idx.mode}"
-        @out.puts "source_size\t#{idx.source_size}"
-        @out.puts "source_mtime\t#{idx.source_mtime}"
-        @out.puts "checkpoint_span\t#{idx.checkpoint_span}"
-        @out.puts "name_interval\t#{idx.name_interval}" if idx.sparse?
-        @out.puts "order_mode\t#{idx.order_mode_label}" if idx.sparse?
-        @out.puts "hash_algorithm\t#{idx.hash_algorithm}" if idx.exact?
-        @out.puts "hash_seed\t#{idx.hash_seed}" if idx.exact?
-        @out.puts "name_mode\t#{idx.name_mode}"
-        @out.puts "record_count\t#{idx.record_count}" if idx.record_count > 0
-        @out.puts "input_names_sorted\t#{idx.input_names_sorted?}"
-        @out.puts "checkpoints\t#{idx.checkpoint_metas.size}"
-        @out.puts "anchors\t#{idx.names.size}" if idx.sparse?
-        @out.puts "entries\t#{idx.entries.size}" if idx.exact?
-      end
+      opt.raw? ? show_raw_entries(idx) : show_metadata(idx)
       0
+    end
+
+    private def show_raw_entries(idx : Index) : Nil
+      case idx.mode
+      in .sparse?
+        idx.names.each do |entry|
+          @out.puts [
+            entry.name,
+            entry.uncompressed_offset,
+            entry.checkpoint_id,
+            entry.delta,
+          ].join('\t')
+        end
+      in .exact?
+        idx.entries.each do |entry|
+          @out.puts [
+            idx.entry_name(entry),
+            entry.name_hash,
+            entry.record_number,
+            entry.record_offset,
+            entry.record_size,
+          ].join('\t')
+        end
+      end
+    end
+
+    private def show_metadata(idx : Index) : Nil
+      @out.puts "version\t#{idx.format_version}"
+      @out.puts "mode\t#{idx.mode}"
+      @out.puts "source_size\t#{idx.source_size}"
+      @out.puts "source_mtime\t#{idx.source_mtime}"
+      @out.puts "checkpoint_span\t#{idx.checkpoint_span}"
+      @out.puts "name_interval\t#{idx.name_interval}" if idx.sparse?
+      @out.puts "order_mode\t#{idx.order_mode_label}" if idx.sparse?
+      @out.puts "hash_algorithm\t#{idx.hash_algorithm}" if idx.exact?
+      @out.puts "hash_seed\t#{idx.hash_seed}" if idx.exact?
+      @out.puts "name_mode\t#{idx.name_mode}"
+      @out.puts "record_count\t#{idx.record_count}" if idx.record_count > 0
+      @out.puts "input_names_sorted\t#{idx.input_names_sorted?}"
+      @out.puts "checkpoints\t#{idx.checkpoint_metas.size}"
+      @out.puts "anchors\t#{idx.names.size}" if idx.sparse?
+      @out.puts "entries\t#{idx.entries.size}" if idx.exact?
     end
 
     private def run_check(args : Array(String), opt : Options) : Int32

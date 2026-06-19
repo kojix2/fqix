@@ -31,13 +31,14 @@ module Fqix
       end
     end
 
-    def write(io : IO, & : Writer ->) : Nil
-      yield Writer.new(io)
+    def write(io : IO, &) : Nil
+      writer = Writer.new(io)
+      with writer yield writer
     end
 
-    def build(& : Writer ->) : Bytes
+    def build(&) : Bytes
       io = IO::Memory.new
-      write(io) { |writer| yield writer }
+      write(io) { yield }
       io.to_slice
     end
 

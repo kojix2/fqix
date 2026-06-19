@@ -1,4 +1,5 @@
 CRYSTAL ?= crystal
+AMEBA ?= ./bin/ameba
 CC ?= cc
 BUILD_DIR ?= build
 BIN_DIR ?= bin
@@ -39,7 +40,7 @@ help:
 	@printf '%s\n' \
 		'Targets:' \
 		'  make              Build bin/fqix' \
-		'  make test         Run specs, including the zran reference check' \
+		'  make test         Run specs and Ameba' \
 		'  make clean        Remove build artifacts' \
 		'  make help         Show this help' \
 		'' \
@@ -47,6 +48,7 @@ help:
 		'  make release=1    Build with Crystal --release' \
 		'  make cpu=native   Tune codegen for this CPU (or cpu=<name>, e.g. skylake)' \
 		'  CRYSTAL=crystal   Crystal compiler command' \
+		'  AMEBA=./bin/ameba Ameba command' \
 		'  CC=cc             C compiler for spec reference object'
 
 $(BIN_DIR):
@@ -63,9 +65,11 @@ $(BIN_DIR)/fqix: $(BUILD_STAMP) shard.yml $(shell find src -type f) | $(BIN_DIR)
 	$(CRYSTAL) build $(CRYSTAL_BUILD_FLAGS) $(CPU_FLAGS) src/cli.cr -o $@ --link-flags "$(LDFLAGS)"
 
 test: | $(BUILD_DIR)
+	@test -x "$(AMEBA)" || { printf '%s\n' 'Ameba executable not found. Run `shards install` first, or set AMEBA=/path/to/ameba.' >&2; exit 1; }
 	@trap 'rm -f "$(SPEC_ZRAN_OBJECT)"' EXIT; \
 	$(CC) $(SPEC_CFLAGS) $(SPEC_CPU_FLAGS) -c spec/support/zran.c -o "$(SPEC_ZRAN_OBJECT)"; \
 	$(CRYSTAL) spec --link-flags "$(SPEC_ZRAN_LINK_OBJECT) $(LDFLAGS)"
+	$(AMEBA)
 
 clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)

@@ -41,7 +41,7 @@ describe Fqix::CLI do
       stdout.should contain("Build a read-name index for a FASTQ.gz file")
       stdout.should contain("Usage: fqix index")
       stdout.should contain("Arguments:")
-      stdout.should contain("reads.fastq.gz  Input FASTQ.gz file")
+      stdout.should contain("<fastq.gz>  Input FASTQ.gz file")
       stdout.should contain("-c, --checkpoint-span BYTES")
       stdout.should contain("-m, --mode MODE")
       stdout.should contain("-n, --name-interval N")
