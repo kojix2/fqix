@@ -4,6 +4,7 @@
 /lib/
 /.shards/
 /docs/api/
+*.lock
 *.dwarf
 *.o
 *.tmp
