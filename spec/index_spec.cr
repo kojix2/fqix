@@ -835,11 +835,9 @@ describe Fqix::Index do
         index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
         colliding_entries = Fqix::Index.build_entries(
           [
-            Fqix::RawEntry.new("alpha", 0_u64, records[0][1].bytesize.to_u64),
-            Fqix::RawEntry.new("beta", records[0][1].bytesize.to_u64, records[1][1].bytesize.to_u64),
-          ],
-          Fqix::HashAlgorithm::TestZero,
-          0_u64
+            Fqix::RawEntry.new("alpha", 0_u64, records[0][1].bytesize.to_u64, Fqix::HashAlgorithm::TestZero, 0_u64),
+            Fqix::RawEntry.new("beta", records[0][1].bytesize.to_u64, records[1][1].bytesize.to_u64, Fqix::HashAlgorithm::TestZero, 0_u64),
+          ]
         )
         collision_index = Fqix::Index.new(
           gz_path,
@@ -876,10 +874,9 @@ describe Fqix::Index do
         index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
         mphf, slots, overflows = Fqix::Index.build_mphf_tables(
           [
-            Fqix::RawEntry.new("alpha", 0_u64, records[0][1].bytesize.to_u64),
-            Fqix::RawEntry.new("beta", records[0][1].bytesize.to_u64, records[1][1].bytesize.to_u64),
+            Fqix::RawEntry.new("alpha", 0_u64, records[0][1].bytesize.to_u64, Fqix::HashAlgorithm::TestZero, 0_u64),
+            Fqix::RawEntry.new("beta", records[0][1].bytesize.to_u64, records[1][1].bytesize.to_u64, Fqix::HashAlgorithm::TestZero, 0_u64),
           ],
-          Fqix::HashAlgorithm::TestZero,
           0_u64
         )
         collision_index = Fqix::Index.new(
@@ -919,9 +916,7 @@ describe Fqix::Index do
       entries = Fqix::Index.build_entries(
         [
           Fqix::RawEntry.new("read1", 0_u64, 20_u64),
-        ],
-        Fqix::HashAlgorithm::Fnv1a64,
-        0_u64
+        ]
       )
       index = Fqix::Index.new(
         "reads.fastq.gz",

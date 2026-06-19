@@ -122,8 +122,6 @@ module Fqix
     end
   end
 
-  record RawEntry, name : String, record_offset : UInt64, record_size : UInt64
-
   struct CheckpointMeta
     getter out_offset : UInt64
     getter in_offset : UInt64
@@ -160,6 +158,49 @@ module Fqix
         value = (value &* FNV_PRIME) & UInt64::MAX
       end
       value
+    end
+  end
+
+  module NameGuard
+    extend self
+
+    def guard(name : String, seed : UInt64) : UInt8
+      (Mphf.mix(NameHash.hash(name, HashAlgorithm::Fnv1a64, seed ^ 0xD1B54A32D192ED03_u64)) & 0xff_u64).to_u8
+    end
+  end
+
+  # Exact-build record kept only until the v2 lookup tables are constructed.
+  # The normalized read name is intentionally not retained: exact lookup
+  # verifies the source FASTQ header, so the build only needs the name-derived
+  # key and guard plus the record location.
+  struct RawEntry
+    getter key : UInt64
+    getter record_offset : UInt64
+    getter record_size : UInt32
+    getter guard : UInt8
+
+    def initialize(@key : UInt64,
+                   @record_offset : UInt64,
+                   record_size : UInt64,
+                   @guard : UInt8)
+      @record_size = checked_record_size(record_size, record_offset)
+    end
+
+    def initialize(name : String,
+                   @record_offset : UInt64,
+                   record_size : UInt64,
+                   algorithm : HashAlgorithm = HashAlgorithm::Fnv1a64,
+                   seed : UInt64 = 0_u64)
+      @key = NameHash.hash(name, algorithm, seed)
+      @record_size = checked_record_size(record_size, record_offset)
+      @guard = NameGuard.guard(name, seed)
+    end
+
+    private def checked_record_size(record_size : UInt64, record_offset : UInt64) : UInt32
+      if record_size > UInt32::MAX
+        raise Error.new("FASTQ record too large for exact index at #{record_offset}")
+      end
+      record_size.to_u32
     end
   end
 
@@ -239,7 +280,7 @@ module Fqix
     getter records : Array(RawEntry)
     getter? input_names_sorted = true
 
-    def initialize
+    def initialize(@fingerprint_algorithm : HashAlgorithm, @fingerprint_seed : UInt64)
       @records = [] of RawEntry
       @record_index = 0_u64
       @last_name = nil.as(String?)
@@ -270,7 +311,12 @@ module Fqix
       end
       @last_name = name
 
-      @records << RawEntry.new(name, record_start, record_size)
+      @records << RawEntry.new(
+        NameHash.hash(name, @fingerprint_algorithm, @fingerprint_seed),
+        record_start,
+        record_size,
+        NameGuard.guard(name, @fingerprint_seed)
+      )
       @record_index += 1
     end
   end
@@ -459,7 +505,7 @@ module Fqix
       raise Error.new("checkpoint span must be greater than zero") if checkpoint_span == 0
 
       info = File.info(gz_path)
-      builder = ExactEntryBuilder.new
+      builder = ExactEntryBuilder.new(DEFAULT_HASH_ALGORITHM, DEFAULT_HASH_SEED)
       tmp = build_zran_temp(gz_path, checkpoint_span, builder)
       begin
         checkpoints = Zran.read_temp(tmp)
@@ -470,7 +516,7 @@ module Fqix
 
       checkpoint_metas = checkpoints.map { |checkpoint| CheckpointMeta.from_checkpoint(checkpoint) }
       windows = checkpoints.map(&.window)
-      mphf, slots, overflows = build_mphf_tables(builder.records, DEFAULT_HASH_ALGORITHM, DEFAULT_HASH_SEED)
+      mphf, slots, overflows = build_mphf_tables(builder.records, DEFAULT_HASH_SEED)
       new(
         gz_path,
         info.size.to_u64,
@@ -509,79 +555,88 @@ module Fqix
       end
     end
 
-    def self.build_entries(records : Array(RawEntry),
-                           fingerprint_algorithm : HashAlgorithm,
-                           fingerprint_seed : UInt64) : Array(Entry)
-      sorted = records
-        .map { |record| {NameHash.hash(record.name, fingerprint_algorithm, fingerprint_seed), record} }
-        .sort_by! { |fingerprint, record| {fingerprint, record.record_offset} }
-      entries = Array(Entry).new(sorted.size)
-      sorted.each do |fingerprint, record|
-        if record.record_size > UInt32::MAX
-          raise Error.new("FASTQ record too large for exact index at #{record.record_offset}")
-        end
-        entries << Entry.new(fingerprint, record.record_offset, record.record_size.to_u32)
+    # v2.1 entry layout. Retained for reader-compatibility specs; this is not
+    # the production exact write path (`build_exact` uses `build_mphf_tables`).
+    def self.build_entries(records : Array(RawEntry)) : Array(Entry)
+      sort_by_key!(records)
+      entries = Array(Entry).new(records.size)
+      records.each do |record|
+        entries << Entry.new(record.key, record.record_offset, record.record_size)
       end
       entries
     end
 
     def self.build_mphf_tables(records : Array(RawEntry),
-                               fingerprint_algorithm : HashAlgorithm,
                                fingerprint_seed : UInt64) : Tuple(Mphf, Array(ExactSlot), Array(ExactOverflowEntry))
-      grouped = Hash(UInt64, Array(RawEntry)).new { |hash, key| hash[key] = [] of RawEntry }
-      records.each do |record|
-        grouped[NameHash.hash(record.name, fingerprint_algorithm, fingerprint_seed)] << record
-      end
-
-      keys = grouped.keys.sort!
+      sort_by_key!(records)
+      keys = distinct_keys(records)
       mphf = Mphf.new(keys, fingerprint_seed)
       slots = Array(ExactSlot).new(keys.size, ExactSlot.new(0_u64, 0_u32, 0_u8, 0_u8))
       overflows = [] of ExactOverflowEntry
 
-      keys.each do |key|
+      run_start = 0
+      while run_start < records.size
+        key = records[run_start].key
+        run_end = run_start + 1
+        while run_end < records.size && records[run_end].key == key
+          run_end += 1
+        end
         slot_id = mphf.lookup(key) || raise Error.new("internal mphf build error")
-        records_for_key = grouped[key].sort_by!(&.record_offset)
-        if records_for_key.size == 1
-          record = records_for_key[0]
+        run_length = run_end - run_start
+        if run_length == 1
+          record = records[run_start]
           slots[slot_id.to_i] = ExactSlot.new(
             record.record_offset,
-            checked_record_size(record),
-            guard(record.name, fingerprint_seed),
+            record.record_size,
+            record.guard,
             0_u8
           )
         else
-          if records_for_key.size > UInt32::MAX
+          if run_length > UInt32::MAX
             raise Error.new("too many FASTQ records for one exact index key")
           end
           overflow_offset = overflows.size.to_u64
-          records_for_key.each do |overflow_record|
+          run_start.upto(run_end - 1) do |index|
+            overflow_record = records[index]
             overflows << ExactOverflowEntry.new(
               overflow_record.record_offset,
-              checked_record_size(overflow_record),
-              guard(overflow_record.name, fingerprint_seed)
+              overflow_record.record_size,
+              overflow_record.guard
             )
           end
           slots[slot_id.to_i] = ExactSlot.new(
             overflow_offset,
-            records_for_key.size.to_u32,
+            run_length.to_u32,
             0_u8,
             ExactSlot::FLAG_OVERFLOW
           )
         end
+        run_start = run_end
       end
 
       {mphf, slots, overflows}
     end
 
-    private def self.checked_record_size(record : RawEntry) : UInt32
-      if record.record_size > UInt32::MAX
-        raise Error.new("FASTQ record too large for exact index at #{record.record_offset}")
+    # Group by precomputed key while preserving FASTQ input order within each
+    # key. `record_offset` is monotonic in input order and keeps duplicate names
+    # and forced key collisions stable.
+    private def self.sort_by_key!(records : Array(RawEntry)) : Nil
+      records.sort_by! { |record| {record.key, record.record_offset} }
+    end
+
+    private def self.distinct_keys(records : Array(RawEntry)) : Array(UInt64)
+      keys = [] of UInt64
+      last_key = nil.as(UInt64?)
+      records.each do |record|
+        next if last_key == record.key
+        keys << record.key
+        last_key = record.key
       end
-      record.record_size.to_u32
+      keys
     end
 
     def self.guard(name : String, seed : UInt64) : UInt8
-      (Mphf.mix(NameHash.hash(name, HashAlgorithm::Fnv1a64, seed ^ 0xD1B54A32D192ED03_u64)) & 0xff_u64).to_u8
+      NameGuard.guard(name, seed)
     end
 
     def self.checkpoint_for(checkpoints : Array(CheckpointMeta), out_offset : UInt64) : Int32
