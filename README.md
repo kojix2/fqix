@@ -91,10 +91,10 @@ Exact mode is the v2 order-independent strategy.
 It stores:
 
 - zran checkpoints for resuming gzip inflation
-- one hash-sorted entry for every FASTQ record
-- a read-name string table
+- a minimal perfect hash over read-name keys
+- slot and overflow tables that point to FASTQ records
 
-Lookup hashes the query, checks hash-matching entries with exact name comparison, resumes gzip inflation from the indexed checkpoint, extracts the indexed record size, and verifies the extracted FASTQ header.
+Lookup hashes the query into an MPHF slot, filters the slot's record candidates with a small guard byte, resumes gzip inflation from each surviving candidate's checkpoint, extracts the indexed record size, and verifies the extracted FASTQ header.
 
 Exact mode is larger than sparse mode, but it works even when read names are unsorted, shuffled, filtered, or concatenated in arbitrary order.
 
@@ -115,7 +115,7 @@ Multiline sequence or quality fields are not supported. The read name is the tex
 
 - Multiline FASTQ is not supported.
 - Sparse mode requires read names sorted by the selected `--name-order`.
-- Exact mode can create large indexes because it stores one entry per FASTQ record plus read-name bytes.
+- Exact mode is larger than sparse mode because it stores one addressable record candidate per FASTQ record.
 - `fqix check` compares source file size and second-resolution mtime.
 - Parallel lookup is not implemented.
 

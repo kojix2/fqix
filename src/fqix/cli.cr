@@ -289,14 +289,24 @@ module Fqix
           ].join('\t')
         end
       in .exact?
-        idx.entries.each do |entry|
-          @out.puts [
-            idx.entry_name(entry),
-            entry.name_hash,
-            entry.record_number,
-            entry.record_offset,
-            entry.record_size,
-          ].join('\t')
+        if idx.format_version.minor <= 1
+          idx.entries.each do |entry|
+            @out.puts [
+              entry.fingerprint,
+              entry.record_offset,
+              entry.record_size,
+            ].join('\t')
+          end
+        else
+          idx.slots.each_with_index do |slot, index|
+            @out.puts [
+              index,
+              slot.overflow? ? "overflow" : "inline",
+              slot.value,
+              slot.count_or_size,
+              slot.guard,
+            ].join('\t')
+          end
         end
       end
     end
@@ -309,14 +319,21 @@ module Fqix
       @out.puts "checkpoint_span\t#{idx.checkpoint_span}"
       @out.puts "name_interval\t#{idx.name_interval}" if idx.sparse?
       @out.puts "order_mode\t#{idx.order_mode_label}" if idx.sparse?
-      @out.puts "hash_algorithm\t#{idx.hash_algorithm}" if idx.exact?
-      @out.puts "hash_seed\t#{idx.hash_seed}" if idx.exact?
+      @out.puts "fingerprint_algorithm\t#{idx.fingerprint_algorithm}" if idx.exact?
+      @out.puts "fingerprint_seed\t#{idx.fingerprint_seed}" if idx.exact?
       @out.puts "name_mode\t#{idx.name_mode}"
       @out.puts "record_count\t#{idx.record_count}" if idx.record_count > 0
       @out.puts "input_names_sorted\t#{idx.input_names_sorted?}"
       @out.puts "checkpoints\t#{idx.checkpoint_metas.size}"
       @out.puts "anchors\t#{idx.names.size}" if idx.sparse?
-      @out.puts "entries\t#{idx.entries.size}" if idx.exact?
+      if idx.exact?
+        if idx.format_version.minor <= 1
+          @out.puts "entries\t#{idx.entries.size}"
+        else
+          @out.puts "slots\t#{idx.slots.size}"
+          @out.puts "overflows\t#{idx.overflows.size}"
+        end
+      end
     end
 
     private def run_check(args : Array(String), opt : Options) : Int32

@@ -67,7 +67,9 @@ module Fqix
     def fetch_matches_with_status(name : String, scan_bytes : UInt64 = DEFAULT_SCAN_BYTES) : FetchMatchesResult
       case @index.mode
       in .exact?
-        matches = @index.find_entries(name).map { |entry| {entry.record_number, fetch_exact_entry(name, entry)} }
+        matches = @index.find_exact_candidates(name).compact_map do |candidate|
+          fetch_exact_candidate(name, candidate).try { |record| {candidate.record_offset, record} }
+        end
         matches.empty? ? FetchMatchesResult.not_found : FetchMatchesResult.found(matches)
       in .sparse?
         fetch_sparse_matches_with_status(name, scan_bytes)
@@ -105,28 +107,25 @@ module Fqix
       scanner.result(limit_reached)
     end
 
-    private def fetch_exact_entry(query : String, entry : Entry) : String
+    private def fetch_exact_candidate(query : String, candidate : ExactCandidate) : String?
       if @index.checkpoint_metas.empty?
         raise Error.new("invalid fqix index checkpoint count")
       end
-      checkpoint_id = Index.checkpoint_for(@index.checkpoint_metas, entry.record_offset)
+      checkpoint_id = Index.checkpoint_for(@index.checkpoint_metas, candidate.record_offset)
       checkpoint = @index.checkpoint(checkpoint_id)
-      delta = entry.record_offset - @index.checkpoint_metas[checkpoint_id].out_offset
+      delta = candidate.record_offset - @index.checkpoint_metas[checkpoint_id].out_offset
       output = IO::Memory.new
-      Zran.extract_to(@gz_path, checkpoint, delta, entry.record_size, ->(chunk : Bytes) {
+      Zran.extract_to(@gz_path, checkpoint, delta, candidate.record_size.to_u64, ->(chunk : Bytes) {
         output.write(chunk)
         true
       })
       record = output.to_s
       newline = record.index('\n')
       header = newline ? record[0, newline + 1] : record
-      raise Error.new("index/input mismatch: empty FASTQ record at #{entry.record_offset}") if header.empty?
+      raise Error.new("index/input mismatch: empty FASTQ record at #{candidate.record_offset}") if header.empty?
       actual = Fastq.name_from_header(header)
       expected = @index.normalize_query(query)
-      unless actual == expected
-        raise Error.new("index/input mismatch for #{expected}: found #{actual} at indexed offset")
-      end
-      record
+      actual == expected ? record : nil
     end
 
     # Streaming, four-line FASTQ matcher for sparse mode. It scans from the

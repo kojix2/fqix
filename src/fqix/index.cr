@@ -1,6 +1,7 @@
 require "./error"
 require "./fastq"
 require "./index_format"
+require "./mphf"
 require "./order"
 require "./window_store"
 require "./zran"
@@ -50,28 +51,78 @@ module Fqix
     end
   end
 
-  # Exact v2 entry. An exact index stores one entry for every FASTQ record,
-  # sorted by read-name hash, and never relies on FASTQ body order.
+  # Exact v2.1 entry. An exact index stores one compact candidate entry for
+  # every FASTQ record, sorted by read-name fingerprint, and verifies the
+  # extracted FASTQ header before returning a match.
   struct Entry
-    getter name_hash : UInt64
-    getter name_offset : UInt64
-    getter name_length : UInt32
-    getter record_number : UInt64
+    getter fingerprint : UInt64
     getter record_offset : UInt64
-    getter record_size : UInt64
-    getter flags : UInt32
+    getter record_size : UInt32
 
-    def initialize(@name_hash : UInt64,
-                   @name_offset : UInt64,
-                   @name_length : UInt32,
-                   @record_number : UInt64,
+    def initialize(@fingerprint : UInt64,
                    @record_offset : UInt64,
-                   @record_size : UInt64,
-                   @flags : UInt32 = 0_u32)
+                   @record_size : UInt32)
     end
   end
 
-  record RawEntry, name : String, record_number : UInt64, record_offset : UInt64, record_size : UInt64
+  # Exact v2.2 inline slot. A slot either stores one record directly, or an
+  # overflow table reference for duplicate/colliding 64-bit keys.
+  struct ExactSlot
+    FLAG_OVERFLOW = 1_u8
+
+    getter value : UInt64
+    getter count_or_size : UInt32
+    getter guard : UInt8
+    getter flags : UInt8
+
+    def initialize(@value : UInt64,
+                   @count_or_size : UInt32,
+                   @guard : UInt8,
+                   @flags : UInt8)
+    end
+
+    def overflow? : Bool
+      (flags & FLAG_OVERFLOW) != 0
+    end
+
+    def record_offset : UInt64
+      value
+    end
+
+    def record_size : UInt32
+      count_or_size
+    end
+
+    def overflow_offset : UInt64
+      value
+    end
+
+    def overflow_count : UInt32
+      count_or_size
+    end
+  end
+
+  struct ExactOverflowEntry
+    getter record_offset : UInt64
+    getter record_size : UInt32
+    getter guard : UInt8
+
+    def initialize(@record_offset : UInt64,
+                   @record_size : UInt32,
+                   @guard : UInt8)
+    end
+  end
+
+  struct ExactCandidate
+    getter record_offset : UInt64
+    getter record_size : UInt32
+
+    def initialize(@record_offset : UInt64,
+                   @record_size : UInt32)
+    end
+  end
+
+  record RawEntry, name : String, record_offset : UInt64, record_size : UInt64
 
   struct CheckpointMeta
     getter out_offset : UInt64
@@ -219,7 +270,7 @@ module Fqix
       end
       @last_name = name
 
-      @records << RawEntry.new(name, @record_index, record_start, record_size)
+      @records << RawEntry.new(name, record_start, record_size)
       @record_index += 1
     end
   end
@@ -243,15 +294,17 @@ module Fqix
     property mode : IndexMode
     property name_interval : UInt32
     property order_mode : OrderMode
-    property hash_algorithm : HashAlgorithm
-    property hash_seed : UInt64
+    property fingerprint_algorithm : HashAlgorithm
+    property fingerprint_seed : UInt64
     property name_mode : NameMode
     property record_count : UInt64
     property? input_names_sorted : Bool
     getter checkpoint_metas : Array(CheckpointMeta)
     getter names : Array(NameEntry)
     getter entries : Array(Entry)
-    getter name_table : Bytes
+    getter mphf : Mphf?
+    getter slots : Array(ExactSlot)
+    getter overflows : Array(ExactOverflowEntry)
 
     def initialize(@source_path : String,
                    @source_size : UInt64,
@@ -260,35 +313,39 @@ module Fqix
                    @mode : IndexMode,
                    @name_interval : UInt32,
                    @order_mode : OrderMode,
-                   @hash_algorithm : HashAlgorithm,
-                   @hash_seed : UInt64,
+                   @fingerprint_algorithm : HashAlgorithm,
+                   @fingerprint_seed : UInt64,
                    @name_mode : NameMode,
                    @record_count : UInt64,
                    @input_names_sorted : Bool,
                    @checkpoint_metas : Array(CheckpointMeta),
                    @names : Array(NameEntry),
                    @entries : Array(Entry),
-                   @name_table : Bytes,
                    @window_store : WindowStore,
-                   @format_version : FormatVersion = VERSION)
+                   @format_version : FormatVersion = VERSION,
+                   @mphf : Mphf? = nil,
+                   @slots : Array(ExactSlot) = [] of ExactSlot,
+                   @overflows : Array(ExactOverflowEntry) = [] of ExactOverflowEntry)
     end
 
-    # Compatibility constructor for tests and callers that directly build an
-    # exact v2 index object.
+    # Convenience constructor for tests and callers that directly build an exact
+    # v2.1 index object.
     def initialize(@source_path : String,
                    @source_size : UInt64,
                    @source_mtime : Int64,
                    @checkpoint_span : UInt64,
-                   @hash_algorithm : HashAlgorithm,
-                   @hash_seed : UInt64,
+                   @fingerprint_algorithm : HashAlgorithm,
+                   @fingerprint_seed : UInt64,
                    @name_mode : NameMode,
                    @record_count : UInt64,
                    @input_names_sorted : Bool,
                    @checkpoint_metas : Array(CheckpointMeta),
                    @entries : Array(Entry),
-                   @name_table : Bytes,
                    @window_store : WindowStore,
-                   @format_version : FormatVersion = VERSION)
+                   @format_version : FormatVersion = VERSION,
+                   @mphf : Mphf? = nil,
+                   @slots : Array(ExactSlot) = [] of ExactSlot,
+                   @overflows : Array(ExactOverflowEntry) = [] of ExactOverflowEntry)
       @mode = IndexMode::Exact
       @name_interval = 0_u32
       @order_mode = DEFAULT_ORDER_MODE
@@ -354,9 +411,11 @@ module Fqix
         checkpoint_metas,
         names,
         [] of Entry,
-        Bytes.empty,
         MemoryWindowStore.new(windows),
-        IndexFormat::SPARSE_VERSION
+        IndexFormat::SPARSE_VERSION,
+        nil,
+        [] of ExactSlot,
+        [] of ExactOverflowEntry
       )
     end
 
@@ -411,7 +470,7 @@ module Fqix
 
       checkpoint_metas = checkpoints.map { |checkpoint| CheckpointMeta.from_checkpoint(checkpoint) }
       windows = checkpoints.map(&.window)
-      entries, name_table = build_entries(builder.records, DEFAULT_HASH_ALGORITHM, DEFAULT_HASH_SEED)
+      mphf, slots, overflows = build_mphf_tables(builder.records, DEFAULT_HASH_ALGORITHM, DEFAULT_HASH_SEED)
       new(
         gz_path,
         info.size.to_u64,
@@ -427,10 +486,12 @@ module Fqix
         builder.input_names_sorted?,
         checkpoint_metas,
         [] of NameEntry,
-        entries,
-        name_table,
+        [] of Entry,
         MemoryWindowStore.new(windows),
-        IndexFormat::EXACT_VERSION
+        IndexFormat::EXACT_VERSION,
+        mphf,
+        slots,
+        overflows
       )
     end
 
@@ -449,28 +510,78 @@ module Fqix
     end
 
     def self.build_entries(records : Array(RawEntry),
-                           hash_algorithm : HashAlgorithm,
-                           hash_seed : UInt64) : Tuple(Array(Entry), Bytes)
+                           fingerprint_algorithm : HashAlgorithm,
+                           fingerprint_seed : UInt64) : Array(Entry)
       sorted = records
-        .map { |record| {NameHash.hash(record.name, hash_algorithm, hash_seed), record} }
-        .sort_by! { |name_hash, record| {name_hash, record.record_number} }
-      table = IO::Memory.new
+        .map { |record| {NameHash.hash(record.name, fingerprint_algorithm, fingerprint_seed), record} }
+        .sort_by! { |fingerprint, record| {fingerprint, record.record_offset} }
       entries = Array(Entry).new(sorted.size)
-      sorted.each do |name_hash, record|
-        name_bytes = record.name.to_slice
-        raise Error.new("read name too long for index: #{record.name}") if name_bytes.size > UInt32::MAX
-        name_offset = table.pos.to_u64
-        table.write(name_bytes)
-        entries << Entry.new(
-          name_hash,
-          name_offset,
-          name_bytes.size.to_u32,
-          record.record_number,
-          record.record_offset,
-          record.record_size
-        )
+      sorted.each do |fingerprint, record|
+        if record.record_size > UInt32::MAX
+          raise Error.new("FASTQ record too large for exact index at #{record.record_offset}")
+        end
+        entries << Entry.new(fingerprint, record.record_offset, record.record_size.to_u32)
       end
-      {entries, table.to_slice}
+      entries
+    end
+
+    def self.build_mphf_tables(records : Array(RawEntry),
+                               fingerprint_algorithm : HashAlgorithm,
+                               fingerprint_seed : UInt64) : Tuple(Mphf, Array(ExactSlot), Array(ExactOverflowEntry))
+      grouped = Hash(UInt64, Array(RawEntry)).new { |hash, key| hash[key] = [] of RawEntry }
+      records.each do |record|
+        grouped[NameHash.hash(record.name, fingerprint_algorithm, fingerprint_seed)] << record
+      end
+
+      keys = grouped.keys.sort!
+      mphf = Mphf.new(keys, fingerprint_seed)
+      slots = Array(ExactSlot).new(keys.size, ExactSlot.new(0_u64, 0_u32, 0_u8, 0_u8))
+      overflows = [] of ExactOverflowEntry
+
+      keys.each do |key|
+        slot_id = mphf.lookup(key) || raise Error.new("internal mphf build error")
+        records_for_key = grouped[key].sort_by!(&.record_offset)
+        if records_for_key.size == 1
+          record = records_for_key[0]
+          slots[slot_id.to_i] = ExactSlot.new(
+            record.record_offset,
+            checked_record_size(record),
+            guard(record.name, fingerprint_seed),
+            0_u8
+          )
+        else
+          if records_for_key.size > UInt32::MAX
+            raise Error.new("too many FASTQ records for one exact index key")
+          end
+          overflow_offset = overflows.size.to_u64
+          records_for_key.each do |overflow_record|
+            overflows << ExactOverflowEntry.new(
+              overflow_record.record_offset,
+              checked_record_size(overflow_record),
+              guard(overflow_record.name, fingerprint_seed)
+            )
+          end
+          slots[slot_id.to_i] = ExactSlot.new(
+            overflow_offset,
+            records_for_key.size.to_u32,
+            0_u8,
+            ExactSlot::FLAG_OVERFLOW
+          )
+        end
+      end
+
+      {mphf, slots, overflows}
+    end
+
+    private def self.checked_record_size(record : RawEntry) : UInt32
+      if record.record_size > UInt32::MAX
+        raise Error.new("FASTQ record too large for exact index at #{record.record_offset}")
+      end
+      record.record_size.to_u32
+    end
+
+    def self.guard(name : String, seed : UInt64) : UInt8
+      (Mphf.mix(NameHash.hash(name, HashAlgorithm::Fnv1a64, seed ^ 0xD1B54A32D192ED03_u64)) & 0xff_u64).to_u8
     end
 
     def self.checkpoint_for(checkpoints : Array(CheckpointMeta), out_offset : UInt64) : Int32
@@ -534,25 +645,46 @@ module Fqix
       raise Error.new("index mode is not exact") unless exact?
       return [] of Entry if entries.empty?
       normalized = normalize_query(query)
-      hash = NameHash.hash(normalized, hash_algorithm, hash_seed)
-      first = lower_bound_hash(hash)
+      fingerprint = NameHash.hash(normalized, fingerprint_algorithm, fingerprint_seed)
+      first = lower_bound_fingerprint(fingerprint)
       matches = [] of Entry
       index = first
-      while index < entries.size && entries[index].name_hash == hash
-        entry = entries[index]
-        matches << entry if entry_name(entry) == normalized
+      while index < entries.size && entries[index].fingerprint == fingerprint
+        matches << entries[index]
         index += 1
       end
-      matches.sort_by(&.record_number)
+      matches
     end
 
-    def entry_name(entry : Entry) : String
-      offset = entry.name_offset
-      length = entry.name_length
-      if offset > name_table.size.to_u64 || length.to_u64 > name_table.size.to_u64 - offset
-        raise Error.new("invalid fqix index name table reference")
+    def find_exact_candidates(query : String) : Array(ExactCandidate)
+      raise Error.new("index mode is not exact") unless exact?
+      if format_version.minor <= 1 || !entries.empty?
+        return find_entries(query).map { |entry| ExactCandidate.new(entry.record_offset, entry.record_size) }
       end
-      String.new(name_table[offset.to_i, length.to_i])
+
+      mphf = @mphf
+      return [] of ExactCandidate unless mphf
+      normalized = normalize_query(query)
+      key = NameHash.hash(normalized, fingerprint_algorithm, fingerprint_seed)
+      slot_id = mphf.lookup(key)
+      return [] of ExactCandidate unless slot_id && slot_id < slots.size.to_u64
+
+      query_guard = Index.guard(normalized, fingerprint_seed)
+      slot = slots[slot_id.to_i]
+      candidates = [] of ExactCandidate
+      if slot.overflow?
+        if slot.overflow_offset + slot.overflow_count.to_u64 > overflows.size.to_u64
+          raise Error.new("invalid fqix exact overflow reference")
+        end
+        offset = slot.overflow_offset.to_i
+        slot.overflow_count.times do |index|
+          entry = overflows[offset + index]
+          candidates << ExactCandidate.new(entry.record_offset, entry.record_size) if entry.guard == query_guard
+        end
+      elsif slot.guard == query_guard
+        candidates << ExactCandidate.new(slot.record_offset, slot.record_size)
+      end
+      candidates
     end
 
     # Returns the anchor to start scanning from for `query`: the last anchor
@@ -567,8 +699,8 @@ module Fqix
       names[idx < 0 ? 0 : idx]
     end
 
-    private def lower_bound_hash(hash : UInt64) : Int32
-      Index.lower_bound(entries.size) { |index| entries[index].name_hash < hash }
+    private def lower_bound_fingerprint(fingerprint : UInt64) : Int32
+      Index.lower_bound(entries.size) { |index| entries[index].fingerprint < fingerprint }
     end
 
     def self.lower_bound(size : Int32, &before_target : Int32 -> Bool) : Int32

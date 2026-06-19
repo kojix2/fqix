@@ -85,7 +85,7 @@ fqix show --anchors reads.fastq.gz.fqix
 fqix show --entries reads.fastq.gz.fqix
 ```
 
-Without `--entries` or `--anchors`, this prints index metadata. With either raw option, it prints the mode-specific lookup table: sparse anchors for sparse indexes, exact hash entries for exact indexes.
+Without `--entries` or `--anchors`, this prints index metadata. With either raw option, it prints the mode-specific lookup table: sparse anchors for sparse indexes, exact slots for exact indexes.
 
 ### `fqix check`
 

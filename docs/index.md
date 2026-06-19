@@ -6,7 +6,7 @@ It combines zran-style gzip restart checkpoints with a read-name lookup table.
 fqix now has two explicit index modes:
 
 - **sparse**: small v1-style anchor index; requires sorted read names.
-- **exact**: larger v2-style full hash index; works without any read-name order assumption.
+- **exact**: larger v2-style MPHF index; works without any read-name order assumption.
 
 The default is `sparse` to avoid accidentally creating very large exact indexes.
 Use `--mode exact` when the FASTQ order has been shuffled, filtered, merged, or is otherwise unreliable.
@@ -31,7 +31,7 @@ Known limitations:
 
 - FASTQ records are framed as four lines. Wrapped multiline sequence or quality fields are not supported. fqix does not otherwise validate FASTQ semantics such as `+` line contents or sequence/quality length agreement.
 - Sparse mode requires sorted read names.
-- Exact mode can produce large indexes because it stores one entry per FASTQ record.
+- Exact mode is larger than sparse mode because it stores one addressable record candidate per FASTQ record.
 - Some gzip files may have sparse deflate block boundaries, so zran checkpoints may be farther apart than requested.
 - `fqix check` compares source file size and second-resolution modification time.
 - Parallel lookup is not implemented yet.

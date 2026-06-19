@@ -49,8 +49,8 @@ module SpecIndexSupport
                          padding : UInt16 = 0_u16)
     File.open(path, "wb") do |io|
       io.write(Fqix::IndexFormat::MAGIC.to_slice)
-      Fqix::IndexFormat.write_version(io, Fqix::IndexFormat::EXACT_VERSION)
-      name_table_offset =
+      Fqix::IndexFormat.write_version(io, Fqix::FormatVersion.new(Fqix::IndexFormat::EXACT_MAJOR, 1_u16))
+      checkpoints_offset =
         if nnames > UInt64::MAX // Fqix::IndexFormat::ENTRY_SIZE
           Fqix::IndexFormat::HEADER_SIZE + source_path_len
         else
@@ -71,10 +71,10 @@ module SpecIndexSupport
         u64 ncheckpoints
         u64 nnames
         u32 source_path_len
-        u64 0_u64
         u64 Fqix::IndexFormat::HEADER_SIZE + source_path_len
-        u64 name_table_offset
+        u64 checkpoints_offset
         u64 windows_offset
+        bytes Bytes.new(8)
       end
     end
   end
@@ -86,7 +86,7 @@ module SpecIndexSupport
     windows_offset = Fqix::IndexFormat::V2_HEADER_SIZE + Fqix::IndexFormat::CHECKPOINT_META_SIZE
     File.open(path, "wb") do |io|
       io.write(Fqix::IndexFormat::MAGIC.to_slice)
-      Fqix::IndexFormat.write_version(io, Fqix::IndexFormat::EXACT_VERSION)
+      Fqix::IndexFormat.write_version(io, Fqix::FormatVersion.new(Fqix::IndexFormat::EXACT_MAJOR, 1_u16))
       Fqix::BinaryIO.write(io) do
         u16 0_u16
         u16 0_u16
@@ -102,10 +102,10 @@ module SpecIndexSupport
         u64 1_u64
         u64 0_u64
         u32 0_u32
-        u64 0_u64
         u64 Fqix::IndexFormat::V2_HEADER_SIZE
         u64 Fqix::IndexFormat::V2_HEADER_SIZE
         u64 windows_offset
+        bytes Bytes.new(8)
         u64 0_u64
         u64 0_u64
         u8 bits
@@ -115,18 +115,13 @@ module SpecIndexSupport
     end
   end
 
-  def write_exact_index_with_entry_flags(path : String, flags : UInt32)
-    entry = Fqix::Entry.new(0_u64, 0_u64, 0_u32, 0_u64, 0_u64, 0_u64, flags)
-    write_exact_index_with_entries(path, [entry])
-  end
-
-  def write_exact_index_with_entries(path : String, entries : Array(Fqix::Entry), name_table : Bytes = Bytes.empty)
+  def write_exact_index_with_entries(path : String, entries : Array(Fqix::Entry))
     entries_offset = Fqix::IndexFormat::V2_HEADER_SIZE
-    name_table_offset = entries_offset + entries.size.to_u64 * Fqix::IndexFormat::ENTRY_SIZE
-    windows_offset = name_table_offset + name_table.size.to_u64
+    checkpoints_offset = entries_offset + entries.size.to_u64 * Fqix::IndexFormat::ENTRY_SIZE
+    windows_offset = checkpoints_offset
     File.open(path, "wb") do |io|
       io.write(Fqix::IndexFormat::MAGIC.to_slice)
-      Fqix::IndexFormat.write_version(io, Fqix::IndexFormat::EXACT_VERSION)
+      Fqix::IndexFormat.write_version(io, Fqix::FormatVersion.new(Fqix::IndexFormat::EXACT_MAJOR, 1_u16))
       Fqix::BinaryIO.write(io) do
         u16 0_u16
         u16 0_u16
@@ -142,23 +137,18 @@ module SpecIndexSupport
         u64 0_u64
         u64 entries.size.to_u64
         u32 0_u32
-        u64 name_table.size.to_u64
         u64 entries_offset
-        u64 name_table_offset
+        u64 checkpoints_offset
         u64 windows_offset
+        bytes Bytes.new(8)
       end
       entries.each do |entry|
         Fqix::BinaryIO.write(io) do
-          u64 entry.name_hash
-          u64 entry.name_offset
-          u32 entry.name_length
-          u64 entry.record_number
+          u64 entry.fingerprint
           u64 entry.record_offset
-          u64 entry.record_size
-          u32 entry.flags
+          u32 entry.record_size
         end
       end
-      io.write(name_table)
     end
   end
 
@@ -302,6 +292,34 @@ describe Fqix::Index do
       end
     end
 
+    it "rejects unsupported v2.0 exact indexes with a rebuild message" do
+      index_path = File.tempname("fqix-v2-0-reject-spec", ".fqix")
+
+      begin
+        SpecIndexSupport.write_index_with_version(index_path, 2_u16, 0_u16)
+
+        expect_raises(Fqix::Error, "unsupported fqix format 2.0; please rebuild the index") do
+          Fqix::Index.read(index_path)
+        end
+      ensure
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
+    it "rejects unsupported future exact minor versions with a rebuild message" do
+      index_path = File.tempname("fqix-v2-future-reject-spec", ".fqix")
+
+      begin
+        SpecIndexSupport.write_index_with_version(index_path, 2_u16, 3_u16)
+
+        expect_raises(Fqix::Error, "unsupported fqix format 2.3; please rebuild the index") do
+          Fqix::Index.read(index_path)
+        end
+      ensure
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
     it "rejects a corrupt index with an impossible checkpoint count" do
       index_path = File.tempname("fqix-bad-checkpoint-count-spec", ".fqix")
 
@@ -406,28 +424,13 @@ describe Fqix::Index do
       end
     end
 
-    it "rejects exact entries with reserved flags" do
-      index_path = File.tempname("fqix-bad-entry-flags-spec", ".fqix")
+    it "rejects exact indexes with reserved header flags" do
+      index_path = File.tempname("fqix-bad-header-flags-spec", ".fqix")
 
       begin
-        SpecIndexSupport.write_exact_index_with_entry_flags(index_path, 1_u32)
+        SpecIndexSupport.write_index_header(index_path, flags: 1_u16)
 
-        expect_raises(Fqix::Error, "unsupported fqix entry flags") do
-          Fqix::Index.read(index_path)
-        end
-      ensure
-        File.delete(index_path) if File.exists?(index_path)
-      end
-    end
-
-    it "rejects exact entries whose name table reference is out of range" do
-      index_path = File.tempname("fqix-bad-entry-name-ref-spec", ".fqix")
-      entry = Fqix::Entry.new(0_u64, 3_u64, 2_u32, 0_u64, 0_u64, 0_u64)
-
-      begin
-        SpecIndexSupport.write_exact_index_with_entries(index_path, [entry], Bytes[1_u8, 2_u8, 3_u8, 4_u8])
-
-        expect_raises(Fqix::Error, "invalid fqix index name table reference") do
+        expect_raises(Fqix::Error, "unsupported fqix index header flags") do
           Fqix::Index.read(index_path)
         end
       ensure
@@ -438,8 +441,8 @@ describe Fqix::Index do
     it "rejects exact entry tables that are not sorted" do
       index_path = File.tempname("fqix-unsorted-entry-table-spec", ".fqix")
       entries = [
-        Fqix::Entry.new(2_u64, 0_u64, 0_u32, 0_u64, 0_u64, 0_u64),
-        Fqix::Entry.new(1_u64, 0_u64, 0_u32, 1_u64, 0_u64, 0_u64),
+        Fqix::Entry.new(2_u64, 0_u64, 0_u32),
+        Fqix::Entry.new(1_u64, 0_u64, 0_u32),
       ]
 
       begin
@@ -679,6 +682,61 @@ describe Fqix::Index do
   end
 
   context "exact indexes" do
+    it "builds an empty exact index" do
+      gz_path = File.tempname("fqix-empty-exact-spec", ".fastq.gz")
+      index_path = "#{gz_path}.fqix"
+
+      begin
+        SpecIndexSupport.write_gzip_member(gz_path, [] of Tuple(String, String))
+        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index.entries.should be_empty
+        index.record_count.should eq(0_u64)
+        index.write(index_path)
+
+        read_index = Fqix::Index.read(index_path)
+        read_index.format_version.should eq(Fqix::IndexFormat::EXACT_VERSION)
+        Fqix::Reader.new(gz_path, read_index).fetch("missing").should be_nil
+      ensure
+        File.delete(gz_path) if File.exists?(gz_path)
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
+    it "writes v2.2 exact mphf slots" do
+      gz_path = File.tempname("fqix-compact-exact-spec", ".fastq.gz")
+      index_path = "#{gz_path}.fqix"
+      records = [
+        {"read1", "@read1\nACGT\n+\nIIII\n"},
+      ]
+
+      begin
+        SpecIndexSupport.write_gzip_member(gz_path, records)
+        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index.write(index_path)
+
+        read_index = Fqix::Index.read(index_path)
+        read_index.format_version.should eq(Fqix::FormatVersion.new(2_u16, 2_u16))
+        read_index.slots.size.should eq(1)
+        read_index.overflows.size.should eq(0)
+        read_index.find_exact_candidates("read1").size.should eq(1)
+        read_index.find_exact_candidates("read1").first.record_offset.should eq(0_u64)
+        read_index.find_exact_candidates("read1").first.record_size.should eq(records[0][1].bytesize.to_u32)
+
+        mphf = read_index.mphf || raise "expected v2.2 mphf"
+        expected_size = Fqix::IndexFormat::V2_2_HEADER_SIZE +
+                        gz_path.to_slice.size.to_u64 +
+                        mphf.to_slice.size.to_u64 +
+                        Fqix::IndexFormat::SLOT_SIZE +
+                        read_index.checkpoint_metas.size.to_u64 * Fqix::IndexFormat::CHECKPOINT_META_SIZE +
+                        read_index.checkpoint_metas.size.to_u64 * Fqix::Zran::WINDOW_SIZE.to_u64
+        File.size(index_path).to_u64.should eq(expected_size)
+        Fqix::Reader.new(gz_path, read_index).fetch("read1").should eq(records[0][1])
+      ensure
+        File.delete(gz_path) if File.exists?(gz_path)
+        File.delete(index_path) if File.exists?(index_path)
+      end
+    end
+
     it "fetches reads from an unsorted gzip FASTQ" do
       gz_path = File.tempname("fqix-unsorted-spec", ".fastq.gz")
       records = [
@@ -712,8 +770,8 @@ describe Fqix::Index do
         SpecIndexSupport.write_gzip_member(gz_path, records)
 
         index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
-        index.find_entries("read1 extra").size.should eq(1)
-        index.find_entries("@read1 extra").size.should eq(0)
+        index.find_exact_candidates("read1 extra").size.should eq(1)
+        index.find_exact_candidates("@read1 extra").size.should eq(0)
 
         reader = Fqix::Reader.new(gz_path, index)
         reader.fetch("read1 extra").should eq(records[0][1])
@@ -733,8 +791,8 @@ describe Fqix::Index do
         SpecIndexSupport.write_gzip_member(gz_path, records)
 
         index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
-        index.find_entries("@weird").size.should eq(1)
-        index.find_entries("@@weird").size.should eq(0)
+        index.find_exact_candidates("@weird").size.should eq(1)
+        index.find_exact_candidates("@@weird").size.should eq(0)
 
         reader = Fqix::Reader.new(gz_path, index)
         reader.fetch("@weird").should eq(records[0][1])
@@ -765,40 +823,102 @@ describe Fqix::Index do
       end
     end
 
-    it "uses exact name comparison within hash-colliding entry ranges" do
-      entries, name_table = Fqix::Index.build_entries(
-        [
-          Fqix::RawEntry.new("alpha", 0_u64, 0_u64, 20_u64),
-          Fqix::RawEntry.new("beta", 1_u64, 20_u64, 20_u64),
-        ],
-        Fqix::HashAlgorithm::TestZero,
-        0_u64
-      )
-      index = Fqix::Index.new(
-        "reads.fastq.gz",
-        0_u64,
-        0_i64,
-        1_u64,
-        Fqix::HashAlgorithm::TestZero,
-        0_u64,
-        Fqix::NameMode::FirstToken,
-        2_u64,
-        true,
-        [] of Fqix::CheckpointMeta,
-        entries,
-        name_table,
-        Fqix::MemoryWindowStore.new([] of Bytes)
-      )
+    it "verifies exact fingerprint-colliding candidates against FASTQ headers" do
+      gz_path = File.tempname("fqix-colliding-exact-spec", ".fastq.gz")
+      records = [
+        {"alpha", "@alpha\nAAAA\n+\nIIII\n"},
+        {"beta", "@beta\nCCCC\n+\nIIII\n"},
+      ]
 
-      matches = index.find_entries("beta extra")
-      matches.size.should eq(1)
-      index.entry_name(matches.first).should eq("beta")
+      begin
+        SpecIndexSupport.write_gzip_member(gz_path, records)
+        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        colliding_entries = Fqix::Index.build_entries(
+          [
+            Fqix::RawEntry.new("alpha", 0_u64, records[0][1].bytesize.to_u64),
+            Fqix::RawEntry.new("beta", records[0][1].bytesize.to_u64, records[1][1].bytesize.to_u64),
+          ],
+          Fqix::HashAlgorithm::TestZero,
+          0_u64
+        )
+        collision_index = Fqix::Index.new(
+          gz_path,
+          File.size(gz_path).to_u64,
+          File.info(gz_path).modification_time.to_unix,
+          64_u64,
+          Fqix::HashAlgorithm::TestZero,
+          0_u64,
+          Fqix::NameMode::FirstToken,
+          2_u64,
+          true,
+          index.checkpoint_metas,
+          colliding_entries,
+          Fqix::MemoryWindowStore.new(index.checkpoint_metas.each_index.map { |i| index.checkpoint_window(i) }.to_a)
+        )
+
+        collision_index.find_entries("beta extra").size.should eq(2)
+        Fqix::Reader.new(gz_path, collision_index).fetch("beta extra").should eq(records[1][1])
+        Fqix::Reader.new(gz_path, collision_index).fetch("missing").should be_nil
+      ensure
+        File.delete(gz_path) if File.exists?(gz_path)
+      end
+    end
+
+    it "keeps distinct v2.2 key-colliding names findable through overflow slots" do
+      gz_path = File.tempname("fqix-mphf-colliding-exact-spec", ".fastq.gz")
+      records = [
+        {"alpha", "@alpha\nAAAA\n+\nIIII\n"},
+        {"beta", "@beta\nCCCC\n+\nIIII\n"},
+      ]
+
+      begin
+        SpecIndexSupport.write_gzip_member(gz_path, records)
+        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        mphf, slots, overflows = Fqix::Index.build_mphf_tables(
+          [
+            Fqix::RawEntry.new("alpha", 0_u64, records[0][1].bytesize.to_u64),
+            Fqix::RawEntry.new("beta", records[0][1].bytesize.to_u64, records[1][1].bytesize.to_u64),
+          ],
+          Fqix::HashAlgorithm::TestZero,
+          0_u64
+        )
+        collision_index = Fqix::Index.new(
+          gz_path,
+          File.size(gz_path).to_u64,
+          File.info(gz_path).modification_time.to_unix,
+          64_u64,
+          Fqix::IndexMode::Exact,
+          0_u32,
+          Fqix::Index::DEFAULT_ORDER_MODE,
+          Fqix::HashAlgorithm::TestZero,
+          0_u64,
+          Fqix::NameMode::FirstToken,
+          2_u64,
+          true,
+          index.checkpoint_metas,
+          [] of Fqix::NameEntry,
+          [] of Fqix::Entry,
+          Fqix::MemoryWindowStore.new(index.checkpoint_metas.each_index.map { |i| index.checkpoint_window(i) }.to_a),
+          Fqix::IndexFormat::EXACT_VERSION,
+          mphf,
+          slots,
+          overflows
+        )
+
+        collision_index.slots.size.should eq(1)
+        collision_index.overflows.size.should eq(2)
+        Fqix::Reader.new(gz_path, collision_index).fetch("alpha").should eq(records[0][1])
+        Fqix::Reader.new(gz_path, collision_index).fetch("beta").should eq(records[1][1])
+        Fqix::Reader.new(gz_path, collision_index).fetch("missing").should be_nil
+      ensure
+        File.delete(gz_path) if File.exists?(gz_path)
+      end
     end
 
     it "rejects fetching from an index with entries but no checkpoints" do
-      entries, name_table = Fqix::Index.build_entries(
+      entries = Fqix::Index.build_entries(
         [
-          Fqix::RawEntry.new("read1", 0_u64, 0_u64, 20_u64),
+          Fqix::RawEntry.new("read1", 0_u64, 20_u64),
         ],
         Fqix::HashAlgorithm::Fnv1a64,
         0_u64
@@ -815,7 +935,6 @@ describe Fqix::Index do
         true,
         [] of Fqix::CheckpointMeta,
         entries,
-        name_table,
         Fqix::MemoryWindowStore.new([] of Bytes)
       )
 
@@ -824,7 +943,7 @@ describe Fqix::Index do
       end
     end
 
-    it "detects an index/source mismatch after seeking to a record" do
+    it "does not return records whose post-seek header does not match" do
       gz_path = File.tempname("fqix-mismatch-spec", ".fastq.gz")
       original = [
         {"read1", "@read1\nACGT\n+\nIIII\n"},
@@ -838,9 +957,7 @@ describe Fqix::Index do
         index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
         SpecIndexSupport.write_gzip_member(gz_path, replacement)
 
-        expect_raises(Fqix::Error, "index/input mismatch for read1: found readX at indexed offset") do
-          Fqix::Reader.new(gz_path, index).fetch("read1")
-        end
+        Fqix::Reader.new(gz_path, index).fetch("read1").should be_nil
       ensure
         File.delete(gz_path) if File.exists?(gz_path)
       end
@@ -914,7 +1031,7 @@ describe Fqix::Index do
         SpecIndexSupport.write_gzip_member(gz_path, records[5, 5], append: true)
 
         index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
-        index.entries.map { |entry| index.entry_name(entry) }.should contain("read08")
+        index.find_exact_candidates("read08").should_not be_empty
 
         reader = Fqix::Reader.new(gz_path, index)
         reader.fetch("read08").should eq(records[8][1])
@@ -940,7 +1057,7 @@ describe Fqix::Index do
         SpecIndexSupport.write_gzip_member(gz_path, records[10, 5], append: true)
 
         index = Fqix::Index.build(gz_path, checkpoint_span: 4096_u64, mode: Fqix::IndexMode::Exact)
-        index.entries.map { |entry| index.entry_name(entry) }.should contain("read12")
+        index.find_exact_candidates("read12").should_not be_empty
         index.checkpoint_metas.size.should eq(1)
 
         reader = Fqix::Reader.new(gz_path, index)

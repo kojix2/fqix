@@ -4,7 +4,7 @@ fqix indexes ordinary `.fastq.gz` files without recompressing them. Both modes r
 
 | | Sparse (v1) | Exact (v2) |
 | --- | --- | --- |
-| Index size | Small (one anchor per `--name-interval` reads) | Large (one entry per read) |
+| Index size | Small (one anchor per `--name-interval` reads) | Larger (one addressable candidate per read) |
 | Read-name order | Must be sorted by the stored `order_mode` | Any order |
 | Lookup | Resume at nearest anchor, scan forward | Hash, then jump straight to the record |
 | Default | Yes | `--mode exact` |
@@ -27,17 +27,15 @@ Lookup binary-searches the anchor table for the nearest lower name, resumes gzip
 
 Exact mode is the v2 order-independent strategy.
 
-During indexing, fqix reads the FASTQ once and records one entry per FASTQ record:
+During indexing, fqix reads the FASTQ once and records each FASTQ record's lookup data:
 
 - normalized read name
-- name hash
-- FASTQ appearance number
 - uncompressed record offset
 - record byte size
 
-Entries are sorted by `(name_hash, record_number)`. Lookup hashes the query name, binary-searches the matching hash range, checks candidate names with an exact byte comparison, resumes gzip inflation from the closest checkpoint before the record offset, and extracts the indexed record size. The extracted header is normalized again and checked against the query.
+The normalized read names are hashed into distinct 64-bit keys, then fqix builds a pure-Crystal minimal perfect hash over those keys. The MPHF maps a query key to a slot. Each slot stores one record directly or points to an overflow run for duplicate names or rare 64-bit key collisions. A per-record guard byte rejects most missing-name queries before any FASTQ I/O.
 
-The hash is only an accelerator. Hash collisions are safe because exact mode verifies the actual read name before returning a record.
+Lookup computes the query key, gathers the slot's candidate records, filters them by guard, resumes gzip inflation from the closest checkpoint before each record offset, and extracts the indexed record size. The extracted header is normalized again and checked against the query. Verification is authoritative, so duplicate names and hash collisions cannot produce false matches.
 
 ## Tuning
 
@@ -47,7 +45,7 @@ The hash is only an accelerator. Hash collisions are safe because exact mode ver
 
 `--name-order` controls the sparse read-name comparator and is stored in the index. Lookup reads the stored mode, so `fqix get` has no name-order option.
 
-`--scan-limit` controls how far sparse lookup is allowed to scan after an anchor. Exact mode does not need it because each exact entry stores the target record size.
+`--scan-limit` controls how far sparse lookup is allowed to scan after an anchor. Exact mode does not need it because each exact candidate stores the target record size.
 
 ## Freshness check
 
