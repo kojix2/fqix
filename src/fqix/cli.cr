@@ -135,7 +135,7 @@ module Fqix
         ]
       )
       parser.on("-o", "--output FILE", "FQIX index path [fastq.gz.fqix]") { |v| opt.output = v }
-      parser.on("-c", "--checkpoint-span BYTES", "Uncompressed bytes between zran checkpoints [4194304]") { |v| opt.checkpoint_span = parse_u64(v, "checkpoint span") }
+      parser.on("-c", "--checkpoint-span BYTES", "Uncompressed bytes between zran checkpoints, minimum 32768 [4194304]") { |v| opt.checkpoint_span = parse_u64(v, "checkpoint span") }
       parser.on("-m", "--mode MODE", "Index mode: sparse or exact [sparse]") { |v| opt.index_mode = parse_index_mode(v) }
       parser.on("-n", "--name-interval N", "Sparse anchor interval [1024]") { |v| opt.name_interval = parse_u32(v, "name interval"); opt.name_interval_set = true }
       parser.on("--name-order ORDER", "Sparse read-name order: auto, lex, or natural [auto]") { |v| opt.name_order = parse_name_order(v); opt.name_order_set = true }

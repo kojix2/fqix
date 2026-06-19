@@ -407,7 +407,7 @@ module Fqix
                    mode : IndexMode = DEFAULT_MODE,
                    name_interval : UInt32 = DEFAULT_NAME_INTERVAL,
                    order_mode : OrderMode? = nil) : Index
-      raise Error.new("checkpoint span must be greater than zero") if checkpoint_span == 0
+      validate_checkpoint_span!(checkpoint_span)
 
       case mode
       in .sparse?
@@ -425,7 +425,7 @@ module Fqix
                           name_interval : UInt32 = DEFAULT_NAME_INTERVAL,
                           order_mode : OrderMode? = nil) : Index
       raise Error.new("name interval must be greater than zero") if name_interval == 0
-      raise Error.new("checkpoint span must be greater than zero") if checkpoint_span == 0
+      validate_checkpoint_span!(checkpoint_span)
 
       info = File.info(gz_path)
       builder = SparseNameTableBuilder.new(name_interval)
@@ -502,7 +502,7 @@ module Fqix
 
     def self.build_exact(gz_path : String,
                          checkpoint_span : UInt64 = DEFAULT_CHECKPOINT_SPAN) : Index
-      raise Error.new("checkpoint span must be greater than zero") if checkpoint_span == 0
+      validate_checkpoint_span!(checkpoint_span)
 
       info = File.info(gz_path)
       builder = ExactEntryBuilder.new(DEFAULT_HASH_ALGORITHM, DEFAULT_HASH_SEED)
@@ -544,6 +544,12 @@ module Fqix
     private def self.build_zran_temp(gz_path : String, checkpoint_span : UInt64, builder) : String
       consumer = ->(chunk : Bytes) { builder.feed(chunk) }
       Zran.build_to_temp(gz_path, checkpoint_span, consumer)
+    end
+
+    private def self.validate_checkpoint_span!(checkpoint_span : UInt64) : Nil
+      if checkpoint_span < Zran::WINDOW_SIZE
+        raise Error.new("checkpoint span must be at least #{Zran::WINDOW_SIZE} bytes")
+      end
     end
 
     def self.build_name_table(checkpoints : Array(CheckpointMeta),

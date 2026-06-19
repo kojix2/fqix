@@ -255,6 +255,23 @@ describe Fqix::Order do
 end
 
 describe Fqix::Index do
+  it "rejects checkpoint spans smaller than the zran window" do
+    gz_path = File.tempname("fqix-small-checkpoint-span-spec", ".fastq.gz")
+    records = [
+      {"read1", "@read1\nACGT\n+\nIIII\n"},
+    ]
+
+    begin
+      SpecIndexSupport.write_gzip_member(gz_path, records)
+
+      expect_raises(Fqix::Error, "checkpoint span must be at least #{Fqix::Zran::WINDOW_SIZE} bytes") do
+        Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64 - 1, mode: Fqix::IndexMode::Exact)
+      end
+    ensure
+      File.delete(gz_path) if File.exists?(gz_path)
+    end
+  end
+
   context "format compatibility and validation" do
     it "reads sparse v1.0 indexes as lexicographic order" do
       index_path = File.tempname("fqix-sparse-v1-0-spec", ".fqix")
@@ -352,7 +369,7 @@ describe Fqix::Index do
       index_path = File.tempname("fqix-bad-checkpoint-have-spec", ".fqix")
 
       begin
-        SpecIndexSupport.write_exact_index_with_checkpoint_meta(index_path, have: (Fqix::Zran::WINDOW_SIZE + 1).to_u32)
+        SpecIndexSupport.write_exact_index_with_checkpoint_meta(index_path, have: (Fqix::Zran::WINDOW_SIZE.to_u64 + 1).to_u32)
 
         expect_raises(Fqix::Error, "invalid fqix checkpoint dictionary size") do
           Fqix::Index.read(index_path)
@@ -570,7 +587,7 @@ describe Fqix::Index do
 
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse, name_interval: 3_u32)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Sparse, name_interval: 3_u32)
         index.mode.sparse?.should be_true
         index.format_version.should eq(Fqix::IndexFormat::SPARSE_VERSION)
         index.order_mode.should eq(Fqix::OrderMode::Lexicographic)
@@ -604,14 +621,14 @@ describe Fqix::Index do
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
         expect_raises(Fqix::Error, /--name-order lex/) do
-          Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse, order_mode: Fqix::OrderMode::Lexicographic)
+          Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Sparse, order_mode: Fqix::OrderMode::Lexicographic)
         end
 
         # Auto (the default) detects natural for this width-varying numeric data.
-        auto_index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse)
+        auto_index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Sparse)
         auto_index.order_mode.should eq(Fqix::OrderMode::Natural)
 
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse, order_mode: Fqix::OrderMode::Natural)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Sparse, order_mode: Fqix::OrderMode::Natural)
         index.order_mode.should eq(Fqix::OrderMode::Natural)
         index.format_version.should eq(Fqix::FormatVersion.new(1_u16, 1_u16))
         index.write(index_path)
@@ -635,7 +652,7 @@ describe Fqix::Index do
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
         expect_raises(Fqix::Error, /use --mode exact/) do
-          Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse)
+          Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Sparse)
         end
       ensure
         File.delete(gz_path) if File.exists?(gz_path)
@@ -656,7 +673,7 @@ describe Fqix::Index do
 
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Sparse)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Sparse)
         reader = Fqix::Reader.new(gz_path, index)
 
         limits.each do |_, limit|
@@ -688,7 +705,7 @@ describe Fqix::Index do
 
       begin
         SpecIndexSupport.write_gzip_member(gz_path, [] of Tuple(String, String))
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         index.entries.should be_empty
         index.record_count.should eq(0_u64)
         index.write(index_path)
@@ -711,7 +728,7 @@ describe Fqix::Index do
 
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         index.write(index_path)
 
         read_index = Fqix::Index.read(index_path)
@@ -748,7 +765,7 @@ describe Fqix::Index do
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
 
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         index.input_names_sorted?.should be_false
         reader = Fqix::Reader.new(gz_path, index)
 
@@ -769,7 +786,7 @@ describe Fqix::Index do
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
 
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         index.find_exact_candidates("read1 extra").size.should eq(1)
         index.find_exact_candidates("@read1 extra").size.should eq(0)
 
@@ -790,7 +807,7 @@ describe Fqix::Index do
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
 
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         index.find_exact_candidates("@weird").size.should eq(1)
         index.find_exact_candidates("@@weird").size.should eq(0)
 
@@ -812,7 +829,7 @@ describe Fqix::Index do
 
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         reader = Fqix::Reader.new(gz_path, index)
 
         records.each do |name, record|
@@ -832,7 +849,7 @@ describe Fqix::Index do
 
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         colliding_entries = Fqix::Index.build_entries(
           [
             Fqix::RawEntry.new("alpha", 0_u64, records[0][1].bytesize.to_u64, Fqix::HashAlgorithm::TestZero, 0_u64),
@@ -871,7 +888,7 @@ describe Fqix::Index do
 
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         mphf, slots, overflows = Fqix::Index.build_mphf_tables(
           [
             Fqix::RawEntry.new("alpha", 0_u64, records[0][1].bytesize.to_u64, Fqix::HashAlgorithm::TestZero, 0_u64),
@@ -949,7 +966,7 @@ describe Fqix::Index do
 
       begin
         SpecIndexSupport.write_gzip_member(gz_path, original)
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         SpecIndexSupport.write_gzip_member(gz_path, replacement)
 
         Fqix::Reader.new(gz_path, index).fetch("read1").should be_nil
@@ -980,7 +997,7 @@ describe Fqix::Index do
           end
         end
 
-        index = Fqix::Index.build(gz_path, checkpoint_span: 1024_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         index.checkpoint_metas.size.should be > 1
         index.write(index_path)
 
@@ -1025,7 +1042,7 @@ describe Fqix::Index do
         SpecIndexSupport.write_gzip_member(gz_path, records[0, 5])
         SpecIndexSupport.write_gzip_member(gz_path, records[5, 5], append: true)
 
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         index.find_exact_candidates("read08").should_not be_empty
 
         reader = Fqix::Reader.new(gz_path, index)
@@ -1051,7 +1068,7 @@ describe Fqix::Index do
         SpecIndexSupport.write_gzip_member(gz_path, records[5, 5], append: true)
         SpecIndexSupport.write_gzip_member(gz_path, records[10, 5], append: true)
 
-        index = Fqix::Index.build(gz_path, checkpoint_span: 4096_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         index.find_exact_candidates("read12").should_not be_empty
         index.checkpoint_metas.size.should eq(1)
 
@@ -1077,7 +1094,7 @@ describe Fqix::Index do
         SpecIndexSupport.write_gzip_text_member(gz_path, plain.byte_slice(0, split))
         SpecIndexSupport.write_gzip_text_member(gz_path, plain.byte_slice(split, plain.bytesize - split), append: true)
 
-        index = Fqix::Index.build(gz_path, checkpoint_span: 64_u64, mode: Fqix::IndexMode::Exact)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         reader = Fqix::Reader.new(gz_path, index)
         reader.fetch("read08").should eq(records[8][1])
       ensure
@@ -1105,7 +1122,7 @@ describe Fqix::Index do
           end
         end
 
-        built = Fqix::Index.build(gz_path, checkpoint_span: 512_u64, mode: Fqix::IndexMode::Exact)
+        built = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
         built.checkpoint_metas.size.should be > 1
         built.write(index_path)
 

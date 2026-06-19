@@ -146,6 +146,24 @@ module SpecZranSupport
 end
 
 describe Fqix::Zran do
+  it "rejects checkpoint spans smaller than the zran window" do
+    gz_path = File.tempname("fqix-zran-small-span-spec", ".fastq.gz")
+
+    begin
+      File.open(gz_path, "wb") do |file|
+        Compress::Gzip::Writer.open(file) do |gzip|
+          gzip << "@read1\nACGT\n+\nIIII\n"
+        end
+      end
+
+      expect_raises(Fqix::Error, "checkpoint span must be at least #{Fqix::Zran::WINDOW_SIZE} bytes") do
+        Fqix::Zran.build_to_temp(gz_path, Fqix::Zran::WINDOW_SIZE.to_u64 - 1)
+      end
+    ensure
+      File.delete(gz_path) if File.exists?(gz_path)
+    end
+  end
+
   it "preserves Fqix::Error raised by a build consumer" do
     gz_path = File.tempname("fqix-zran-consumer-error-spec", ".fastq.gz")
     original = Fqix::Error.new("consumer failed")
@@ -158,7 +176,7 @@ describe Fqix::Zran do
       end
 
       raised = expect_raises(Fqix::Error, "consumer failed") do
-        Fqix::Zran.build_to_temp(gz_path, 1024_u64, ->(_chunk : Bytes) { raise original })
+        Fqix::Zran.build_to_temp(gz_path, Fqix::Zran::WINDOW_SIZE.to_u64, ->(_chunk : Bytes) { raise original })
       end
       raised.should be(original)
       raised.cause.should be_nil
@@ -169,7 +187,7 @@ describe Fqix::Zran do
 
   it "keeps the original cause when wrapping non-Fqix build errors" do
     raised = expect_raises(Fqix::Error) do
-      Fqix::Zran.build_to_temp("/definitely/missing/fqix.fastq.gz", 1024_u64)
+      Fqix::Zran.build_to_temp("/definitely/missing/fqix.fastq.gz", Fqix::Zran::WINDOW_SIZE.to_u64)
     end
 
     raised.cause.should be_a(File::Error)
@@ -194,7 +212,7 @@ describe Fqix::Zran do
 
   it "matches Mark Adler's zran extraction across many offsets" do
     SpecZranSupport.with_reference_gzip do |gz_path, plain|
-      span = 1024_u64
+      span = Fqix::Zran::WINDOW_SIZE.to_u64
       tmp = Fqix::Zran.build_to_temp(gz_path, span)
       checkpoints = Fqix::Zran.read_temp(tmp)
 
@@ -220,7 +238,7 @@ describe Fqix::Zran do
 
   it "matches normal gzip decompression from every checkpoint" do
     SpecZranSupport.with_reference_gzip do |gz_path, plain|
-      tmp = Fqix::Zran.build_to_temp(gz_path, 1024_u64)
+      tmp = Fqix::Zran.build_to_temp(gz_path, Fqix::Zran::WINDOW_SIZE.to_u64)
       checkpoints = Fqix::Zran.read_temp(tmp)
 
       begin
@@ -237,7 +255,7 @@ describe Fqix::Zran do
 
   it "matches Mark Adler's zran extraction across gzip members" do
     SpecZranSupport.with_reference_multimember_gzip do |gz_path, plain, split|
-      span = 1024_u64
+      span = Fqix::Zran::WINDOW_SIZE.to_u64
       tmp = Fqix::Zran.build_to_temp(gz_path, span)
       checkpoints = Fqix::Zran.read_temp(tmp)
 
@@ -292,7 +310,7 @@ describe Fqix::Zran do
 
   it "does not carry checkpoint dictionaries across gzip members" do
     SpecZranSupport.with_reference_multimember_gzip do |gz_path, _plain, split|
-      tmp = Fqix::Zran.build_to_temp(gz_path, 1024_u64)
+      tmp = Fqix::Zran.build_to_temp(gz_path, Fqix::Zran::WINDOW_SIZE.to_u64)
       checkpoints = Fqix::Zran.read_temp(tmp)
 
       begin

@@ -60,7 +60,9 @@ module Fqix
     end
 
     def self.build_to_temp(gz_path : String, span : UInt64, consumer : Proc(Bytes, Nil)? = nil) : String
-      raise Error.new("checkpoint span must be greater than zero") if span == 0
+      if span < WINDOW_SIZE
+        raise Error.new("checkpoint span must be at least #{WINDOW_SIZE} bytes")
+      end
       tmp = File.tempname("fqix-zran", ".tmp")
 
       begin

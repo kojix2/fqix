@@ -54,7 +54,7 @@ hash-collision correctness.
 
 ## Tuning
 
-`--checkpoint-span` controls the target spacing between gzip restart checkpoints in uncompressed bytes. Actual spacing depends on deflate block boundaries in the source gzip stream.
+`--checkpoint-span` controls the target spacing between gzip restart checkpoints in uncompressed bytes. It must be at least the 32 KiB zran window size; smaller spans would only multiply fixed-size windows without improving random access. Actual spacing depends on deflate block boundaries in the source gzip stream.
 
 `--name-interval` controls sparse-index density. Smaller values make sparse lookup scan less but increase the index size.
 

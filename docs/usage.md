@@ -47,7 +47,7 @@ fqix index [OPTIONS] reads.fastq.gz
 Options:
 
 - `-o, --output FILE`: write the index to `FILE`.
-- `-c, --checkpoint-span BYTES`: target uncompressed spacing between gzip restart checkpoints.
+- `-c, --checkpoint-span BYTES`: target uncompressed spacing between gzip restart checkpoints; minimum `32768`.
 - `-m, --mode sparse|exact`: index strategy; default is `sparse`.
 - `-n, --name-interval N`: sparse anchor interval; default is `1024`.
 - `--name-order auto|lex|natural`: sparse read-name order; default is `auto`.
