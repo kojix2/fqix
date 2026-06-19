@@ -14,7 +14,6 @@ module Fqix
     end
 
     enum Command
-      Help
       Version
       Index
       Get
@@ -28,7 +27,7 @@ module Fqix
     end
 
     class Options
-      property command = Command::Help
+      property command = Command::Version
       property output : String?
       property index_path : String?
       property checkpoint_span = Index::DEFAULT_CHECKPOINT_SPAN
@@ -59,11 +58,6 @@ module Fqix
       return print_help(opt, parser) if opt.help?
 
       case opt.command
-      in .help?
-        if arg = @argv.first?
-          raise Error.new("unknown command: #{arg}")
-        end
-        print_help(opt, parser)
       in .version?
         @out.puts "fqix #{VERSION}"
         0
@@ -75,6 +69,11 @@ module Fqix
         run_show(@argv, opt)
       in .check?
         run_check(@argv, opt)
+      else
+        if arg = @argv.first?
+          raise Error.new("unknown command: #{arg}")
+        end
+        print_help(opt, parser)
       end
     rescue ex : Error
       @err.puts "fqix: #{ex.message}"
@@ -108,11 +107,6 @@ module Fqix
 
         parser.on("check", "Check whether an index is stale") do
           configure_check_command(parser, opt)
-        end
-
-        parser.on("help", "Show this help") do
-          opt.command = Command::Help
-          opt.help = true
         end
 
         parser.separator
