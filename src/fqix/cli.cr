@@ -14,6 +14,7 @@ module Fqix
     end
 
     enum Command
+      None
       Version
       Index
       Get
@@ -27,7 +28,7 @@ module Fqix
     end
 
     class Options
-      property command = Command::Version
+      property command = Command::None
       property output : String?
       property index_path : String?
       property checkpoint_span = Index::DEFAULT_CHECKPOINT_SPAN
@@ -58,6 +59,11 @@ module Fqix
       return print_help(opt, parser) if opt.help?
 
       case opt.command
+      in .none?
+        if arg = @argv.first?
+          raise Error.new("unknown command: #{arg}")
+        end
+        print_help(opt, parser)
       in .version?
         @out.puts "fqix #{VERSION}"
         0
@@ -69,11 +75,6 @@ module Fqix
         run_show(@argv, opt)
       in .check?
         run_check(@argv, opt)
-      else
-        if arg = @argv.first?
-          raise Error.new("unknown command: #{arg}")
-        end
-        print_help(opt, parser)
       end
     rescue ex : Error
       @err.puts "fqix: #{ex.message}"
