@@ -1,4 +1,5 @@
 CRYSTAL ?= crystal
+SHARDS ?= shards
 AMEBA ?= ./bin/ameba
 CC ?= cc
 BUILD_DIR ?= build
@@ -48,6 +49,7 @@ help:
 		'  make release=1    Build with Crystal --release' \
 		'  make cpu=native   Tune codegen for this CPU (or cpu=<name>, e.g. skylake)' \
 		'  CRYSTAL=crystal   Crystal compiler command' \
+		'  SHARDS=shards     Shards command' \
 		'  AMEBA=./bin/ameba Ameba command' \
 		'  CC=cc             C compiler for spec reference object'
 
@@ -65,7 +67,7 @@ $(BIN_DIR)/fqix: $(BUILD_STAMP) shard.yml $(shell find src -type f) | $(BIN_DIR)
 	$(CRYSTAL) build $(CRYSTAL_BUILD_FLAGS) $(CPU_FLAGS) src/cli.cr -o $@ --link-flags "$(LDFLAGS)"
 
 test: | $(BUILD_DIR)
-	@test -x "$(AMEBA)" || { printf '%s\n' 'Ameba executable not found. Run `shards install` first, or set AMEBA=/path/to/ameba.' >&2; exit 1; }
+	@test -x "$(AMEBA)" || $(SHARDS) install
 	@trap 'rm -f "$(SPEC_ZRAN_OBJECT)"' EXIT; \
 	$(CC) $(SPEC_CFLAGS) $(SPEC_CPU_FLAGS) -c spec/support/zran.c -o "$(SPEC_ZRAN_OBJECT)"; \
 	$(CRYSTAL) spec --link-flags "$(SPEC_ZRAN_LINK_OBJECT) $(LDFLAGS)"
