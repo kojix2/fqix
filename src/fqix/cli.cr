@@ -91,7 +91,7 @@ module Fqix
     private def build_parser(opt : Options) : CommandParser
       CommandParser.new do |parser|
         parser.banner = main_banner
-        parser.summary_width = 28
+        parser.summary_width = 14
         parser.summary_indent = "  "
 
         parser.on("index", "Build an index") do
@@ -126,14 +126,15 @@ module Fqix
     private def configure_index_command(parser : CommandParser, opt : Options)
       opt.command = Command::Index
       parser.reset_for_subcommand
+      parser.summary_width = 28
       parser.banner = command_banner(
         "Build a read-name index for a FASTQ.gz file",
-        "fqix index [OPTIONS] reads.fastq.gz",
+        "fqix index [OPTIONS] <fastq.gz>",
         [
-          {"reads.fastq.gz", "Input FASTQ.gz file"},
+          {"fastq.gz", "Input FASTQ.gz file"},
         ]
       )
-      parser.on("-o", "--output FILE", "FQIX index path [reads.fastq.gz.fqix]") { |v| opt.output = v }
+      parser.on("-o", "--output FILE", "FQIX index path [fastq.gz.fqix]") { |v| opt.output = v }
       parser.on("-c", "--checkpoint-span BYTES", "Uncompressed bytes between zran checkpoints [4194304]") { |v| opt.checkpoint_span = parse_u64(v, "checkpoint span") }
       parser.on("-m", "--mode MODE", "Index mode: sparse or exact [sparse]") { |v| opt.index_mode = parse_index_mode(v) }
       parser.on("-n", "--name-interval N", "Sparse anchor interval [1024]") { |v| opt.name_interval = parse_u32(v, "name interval"); opt.name_interval_set = true }
@@ -145,15 +146,16 @@ module Fqix
     private def configure_get_command(parser : CommandParser, opt : Options)
       opt.command = Command::Get
       parser.reset_for_subcommand
+      parser.summary_width = 23
       parser.banner = command_banner(
         "Fetch FASTQ records by read name",
-        "fqix get [OPTIONS] reads.fastq.gz read-name...",
+        "fqix get [OPTIONS] <fastq.gz> <readname>...",
         [
-          {"reads.fastq.gz", "Input FASTQ.gz file"},
-          {"read-name...", "Read name to fetch"},
+          {"fastq.gz", "Input FASTQ.gz file"},
+          {"readname", "Read name to fetch"},
         ]
       )
-      parser.on("-i", "--index FILE", "FQIX index path [reads.fastq.gz.fqix]") { |v| opt.index_path = v }
+      parser.on("-i", "--index FILE", "FQIX index path [fastq.gz.fqix]") { |v| opt.index_path = v }
       parser.on("-s", "--scan-limit BYTES", "Sparse mode forward-scan byte limit [16777216]") { |v| opt.scan_bytes = parse_u64(v, "scan limit") }
       parser.on("--first", "Return only the first matching record for each name") { opt.first = true; opt.all = false }
       parser.on("--count", "Print match counts instead of FASTQ records") { opt.count = true }
@@ -168,9 +170,10 @@ module Fqix
     private def configure_show_command(parser : CommandParser, opt : Options)
       opt.command = Command::Show
       parser.reset_for_subcommand
+      parser.summary_width = 14
       parser.banner = command_banner(
         "Show index metadata",
-        "fqix show [OPTIONS] index.fqix",
+        "fqix show [OPTIONS] <index.fqix>",
         [
           {"index.fqix", "Input FQIX index file"},
         ]
@@ -184,14 +187,15 @@ module Fqix
     private def configure_check_command(parser : CommandParser, opt : Options)
       opt.command = Command::Check
       parser.reset_for_subcommand
+      parser.summary_width = 17
       parser.banner = command_banner(
         "Check whether an index is stale",
-        "fqix check [OPTIONS] reads.fastq.gz",
+        "fqix check [OPTIONS] <fastq.gz>",
         [
-          {"reads.fastq.gz", "Input FASTQ.gz file"},
+          {"fastq.gz", "Input FASTQ.gz file"},
         ]
       )
-      parser.on("-i", "--index FILE", "FQIX index path [reads.fastq.gz.fqix]") { |v| opt.index_path = v }
+      parser.on("-i", "--index FILE", "FQIX index path [fastq.gz.fqix]") { |v| opt.index_path = v }
       parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
     end
@@ -370,7 +374,7 @@ module Fqix
     private def write_help_rows(io : IO, rows : Array(Tuple(String, String))) : Nil
       width = rows.max_of { |name, _summary| name.size }
       rows.each do |name, summary|
-        io << "  " << name << "  "
+        io << "  <" << name << ">  "
         io << " " * (width - name.size)
         io.puts summary
       end
