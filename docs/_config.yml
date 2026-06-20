@@ -3,6 +3,11 @@ description: FASTQ read-name index for ordinary .fastq.gz files
 github_username: kojix2
 markdown: kramdown
 theme: minima
+header_pages:
+  - usage.md
+  - how-it-works.md
+  - fqix-format.md
+  - plans/index.md
 plugins:
   - jekyll-optional-front-matter
   - jekyll-titles-from-headings
