@@ -174,7 +174,7 @@ module Fqix
       counts.map { |count| count == 0 ? FetchCountResult.not_found : FetchCountResult.found(count) }
     end
 
-    private def each_verified_exact_record(names : Array(String), & : ExactBatchCandidate, Bytes ->) : Nil
+    private def each_verified_exact_record(names : Array(String), &block : ExactBatchCandidate, Bytes ->) : Nil
       if @index.checkpoint_metas.empty?
         raise Error.new("invalid fqix index checkpoint count") unless names.empty?
       end
@@ -192,34 +192,82 @@ module Fqix
 
       candidates_by_checkpoint.each do |checkpoint_id, candidates|
         each_verified_exact_checkpoint_record(checkpoint_id, candidates) do |entry, record|
-          yield entry, record
+          block.call(entry, record)
         end
       end
     end
 
     private def each_verified_exact_checkpoint_record(checkpoint_id : Int32,
                                                       candidates : Array(ExactBatchCandidate),
-                                                      & : ExactBatchCandidate, Bytes ->) : Nil
+                                                      &block : ExactBatchCandidate, Bytes ->) : Nil
       return if candidates.empty?
 
-      candidates.sort_by!(&.candidate.record_offset)
+      candidates.sort_by! { |entry| {entry.candidate.record_offset, entry.candidate.record_size} }
       min_offset = candidates.first.candidate.record_offset
       max_end = candidates.max_of { |entry| entry.candidate.record_offset + entry.candidate.record_size.to_u64 }
       checkpoint = @index.checkpoint(checkpoint_id)
       delta = min_offset - @index.checkpoint_metas[checkpoint_id].out_offset
-      output = IO::Memory.new
 
+      current = 0
+      streamed = 0_u64
+      record = IO::Memory.new
+      record_bytes = 0_u64
+      # Stream from the first candidate to the last, retaining only the current
+      # record bytes. Identical offset/size candidates share one assembled record.
       Zran.extract_to(@gz_path, checkpoint, delta, max_end - min_offset, ->(chunk : Bytes) {
-        output.write(chunk)
+        chunk_start = min_offset + streamed
+        chunk_end = chunk_start + chunk.size.to_u64
+
+        while current < candidates.size
+          entry = candidates[current]
+          candidate = entry.candidate
+          record_start = candidate.record_offset
+          record_end = record_start + candidate.record_size.to_u64
+          break if chunk_end <= record_start
+
+          run_end = exact_candidate_run_end(candidates, current)
+          overlap_start = chunk_start > record_start ? chunk_start : record_start
+          overlap_end = chunk_end < record_end ? chunk_end : record_end
+          if overlap_start < overlap_end
+            offset = (overlap_start - chunk_start).to_i
+            size = (overlap_end - overlap_start).to_i
+            record.write(chunk[offset, size])
+            record_bytes += size.to_u64
+          end
+
+          break if record_bytes < candidate.record_size.to_u64
+
+          bytes = record.to_slice
+          current.upto(run_end - 1) do |index|
+            run_entry = candidates[index]
+            if verified_exact_record?(run_entry.query, candidate.record_offset, bytes)
+              block.call(run_entry, bytes)
+            end
+          end
+          record.clear
+          record_bytes = 0_u64
+          current = run_end
+        end
+
+        streamed += chunk.size.to_u64
         true
       })
 
-      block = output.to_slice
-      candidates.each do |entry|
-        candidate = entry.candidate
-        record = exact_record_slice(block, min_offset, candidate)
-        yield entry, record if verified_exact_record?(entry.query, candidate.record_offset, record)
+      unless current >= candidates.size
+        raise Error.new("index/input mismatch: truncated FASTQ record at #{candidates[current].candidate.record_offset}")
       end
+    end
+
+    private def exact_candidate_run_end(candidates : Array(ExactBatchCandidate), run_start : Int32) : Int32
+      candidate = candidates[run_start].candidate
+      run_end = run_start + 1
+      while run_end < candidates.size
+        next_candidate = candidates[run_end].candidate
+        break unless next_candidate.record_offset == candidate.record_offset &&
+                     next_candidate.record_size == candidate.record_size
+        run_end += 1
+      end
+      run_end
     end
 
     private def fetch_exact_candidate(query : String, candidate : ExactCandidate) : String?
@@ -236,15 +284,6 @@ module Fqix
       })
       record = output.to_slice
       verified_exact_record?(query, candidate.record_offset, record) ? String.new(record) : nil
-    end
-
-    private def exact_record_slice(block : Bytes, min_offset : UInt64, candidate : ExactCandidate) : Bytes
-      start = (candidate.record_offset - min_offset).to_i
-      size = candidate.record_size.to_i
-      if start < 0 || size < 0 || start + size > block.size
-        raise Error.new("index/input mismatch: truncated FASTQ record at #{candidate.record_offset}")
-      end
-      block[start, size]
     end
 
     private def verified_exact_record?(query : String, record_offset : UInt64, record : Bytes) : Bool

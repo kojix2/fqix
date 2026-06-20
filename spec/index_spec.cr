@@ -841,6 +841,36 @@ describe Fqix::Index do
       end
     end
 
+    it "streams exact batch records that span zran output chunks" do
+      gz_path = File.tempname("fqix-long-exact-batch-spec", ".fastq.gz")
+      seq = "A" * (Fqix::Zran::CHUNK_SIZE + 1024)
+      qual = "I" * seq.bytesize
+      long_record = "@long\n#{seq}\n+\n#{qual}\n"
+      records = [
+        {"head", "@head\nACGT\n+\nIIII\n"},
+        {"long", long_record},
+        {"tail", "@tail\nTGCA\n+\nJJJJ\n"},
+      ]
+
+      begin
+        SpecIndexSupport.write_gzip_member(gz_path, records)
+        index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Exact)
+        reader = Fqix::Reader.new(gz_path, index)
+
+        matches = reader.fetch_many_matches_with_status(["tail", "long"])
+        matches[0].matches.should eq([{records[0][1].bytesize.to_u64 + long_record.bytesize.to_u64, records[2][1]}])
+        matches[1].matches.should eq([{records[0][1].bytesize.to_u64, long_record}])
+
+        counts = reader.count_many_matches_with_status(["long", "missing"])
+        counts[0].status.found?.should be_true
+        counts[0].count.should eq(1)
+        counts[1].status.not_found?.should be_true
+        counts[1].count.should eq(0)
+      ensure
+        File.delete(gz_path) if File.exists?(gz_path)
+      end
+    end
+
     it "verifies exact fingerprint-colliding candidates against FASTQ headers" do
       gz_path = File.tempname("fqix-colliding-exact-spec", ".fastq.gz")
       records = [
