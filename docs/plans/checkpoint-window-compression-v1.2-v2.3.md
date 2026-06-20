@@ -1,8 +1,9 @@
 # fqix Checkpoint-Window Compression Plan: exact v2.3 / sparse v1.2
 
 This plan adds **compressed zran checkpoint windows** to both index kinds. It is
-the "compressed windows" axis left open in `PLAN_V2_1-2.md` (Remaining work, item
-4). The current format and user behavior are documented in:
+the "compressed windows" axis left open in
+`exact-index-compaction-v2.1-v2.2.md` (Remaining work, item 4). The current
+format and user behavior are documented in:
 
 - `docs/usage.md`
 - `docs/how-it-works.md`
@@ -258,7 +259,7 @@ window bytes and `get` results match the raw-format index).
 - Dropping or sub-sampling windows for very deep checkpoints (rapidgzip-style).
   Promising but a different structure; not specified here.
 - Lookup-table compaction for short-read exact (implicit offsets). Tracked in
-  `PLAN_V2_1-2.md`; window compression does not address it.
+  `exact-index-compaction-v2.1-v2.2.md`; window compression does not address it.
 - BGZF-specific indexing. fqix targets ordinary gzip streams and zran-style
   restart points; it works on bgzip files but gains nothing from BGZF block
   structure.

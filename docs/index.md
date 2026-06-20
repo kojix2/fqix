@@ -21,6 +21,7 @@ Use `--mode exact` when the FASTQ order has been shuffled, filtered, merged, or 
 - [Usage](usage.html)
 - [How it works](how-it-works.html)
 - [FQIX file format](fqix-format.html)
+- [Plans](plans/)
 - [API documentation](api/)
 
 ## Status

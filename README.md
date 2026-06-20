@@ -129,8 +129,7 @@ make test
 
 Tests link Mark Adler's zran example as a reference implementation, so a C compiler is required.
 
-See `docs/` for current behavior and `PLAN_V2_1-2.md` for the ongoing
-exact-index compaction plan.
+See `docs/` for current behavior and `docs/plans/` for planning notes.
 
 ## License
 
