@@ -42,7 +42,7 @@ addressable, and decompress one window per lookup.
 
 ## Measured window compressibility
 
-`experiments/window_compression.cr` deflates each stored window independently
+`benchmark/window_compression.cr` deflates each stored window independently
 (BEST_COMPRESSION) and sums the result. Per-window vs whole-block deflate differ
 by only 1–2.5 percentage points, confirming independent per-window compression
 keeps random access at near-zero size cost.
@@ -233,7 +233,7 @@ window bytes and `get` results match the raw-format index).
 2. **CLI + show.** Extend `fqix show` with a `window_compression` field and
    compressed window bytes / ratio. No new index flag in this pass.
 3. **Docs + experiments.** Update `docs/fqix-format.md`, `docs/how-it-works.md`,
-   `docs/usage.md`, and regenerate `experiments/` numbers (size table + lookup
+   `docs/usage.md`, and regenerate `benchmark/` numbers (size table + lookup
    latency), keeping the "sparse/long-read big, short-read exact modest" framing.
 4. **Validation.** Confirm size reductions match the measured table and that
    positive/negative lookup latency is unchanged within noise on the real DRR
@@ -245,7 +245,7 @@ window bytes and `get` results match the raw-format index).
 - v1.0/v1.1 and v2.1/v2.2 indexes remain readable; v2.0 still asks for a rebuild.
 - Decompressed `have`-byte dictionaries are byte-identical to the raw-format build;
   all correctness specs pass under duplicates and forced collisions.
-- Measured window-section reduction is reflected in `experiments/`/docs, with the
+- Measured window-section reduction is reflected in `benchmark/`/docs, with the
   honest "sparse/long-read big, short-read exact modest" framing.
 - `make test` passes.
 

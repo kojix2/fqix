@@ -197,7 +197,7 @@ header verification still decides the result.
 - v2.1 exact indexes remain readable.
 - v2.0 exact indexes produce a rebuild message.
 - correctness holds under duplicates and forced key collisions.
-- exact-size measurements are refreshed in `experiments/` or docs.
+- exact-size measurements are refreshed in `benchmark/` or docs.
 - `make test` passes.
 
 ## Out of scope
