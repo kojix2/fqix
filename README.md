@@ -60,7 +60,8 @@ fqix index --mode exact reads.fastq.gz
 fqix get -i reads.fqix reads.fastq.gz read_001
 fqix get --scan-limit 16777216 reads.fastq.gz read_001
 fqix get --first reads.fastq.gz duplicate_name
-fqix get --count --list names.txt reads.fastq.gz
+fqix get --count --file names.txt reads.fastq.gz
+fqix get --count --file - reads.fastq.gz < names.txt
 fqix show reads.fastq.gz.fqix
 fqix show --anchors reads.fastq.gz.fqix
 fqix show --entries reads.fastq.gz.fqix

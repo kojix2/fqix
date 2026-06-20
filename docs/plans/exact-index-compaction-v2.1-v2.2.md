@@ -16,7 +16,7 @@ fqix get reads.fastq.gz read_id
 ```
 
 It must support arbitrary FASTQ record order, duplicate read names, `--all`,
-`--first`, `--count`, `--unique`, `--list`, stale/mismatch protection, and forced
+`--first`, `--count`, `--unique`, `--file`, stale/mismatch protection, and forced
 hash-collision tests.
 
 ## Status

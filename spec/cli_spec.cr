@@ -4,11 +4,12 @@ require "../src/fqix/cli"
 module SpecCliSupport
   extend self
 
-  def run_cli(args : Array(String)) : Tuple(Int32, String, String)
+  def run_cli(args : Array(String), input : String = "") : Tuple(Int32, String, String)
+    stdin = IO::Memory.new(input)
     stdout = IO::Memory.new
     stderr = IO::Memory.new
 
-    status = Fqix::CLI.new(args, stdout, stderr).run
+    status = Fqix::CLI.new(args, stdout, stderr, stdin).run
     {status, stdout.to_s, stderr.to_s}
   end
 
@@ -48,6 +49,17 @@ describe Fqix::CLI do
       stdout.should contain("-h, --help")
       stdout.should_not contain("--version")
       stdout.index!("-c, --checkpoint-span BYTES").should be < stdout.index!("-h, --help")
+      stderr.should be_empty
+    end
+
+    it "prints get help with query-file input" do
+      status, stdout, stderr = SpecCliSupport.run_cli(["get", "--help"])
+
+      status.should eq(0)
+      stdout.should contain("Usage: fqix get")
+      stdout.should contain("-f, --file FILE")
+      stdout.should_not contain("--list")
+      stdout.should contain("'-' for stdin")
       stderr.should be_empty
     end
 
@@ -138,7 +150,7 @@ describe Fqix::CLI do
       File.tempfile("fqix-cli-query-modes", ".fastq.gz") do |gzip_file|
         gz_path = gzip_file.path
         index_path = "#{gz_path}.fqix"
-        list_path = File.tempname("fqix-cli-query-list", ".txt")
+        query_file = File.tempname("fqix-cli-query-list", ".txt")
         records = [
           "@dup\nAAAA\n+\nIIII\n",
           "@other\nCCCC\n+\nIIII\n",
@@ -146,11 +158,16 @@ describe Fqix::CLI do
         ]
         gzip_file.close
         SpecCliSupport.write_gzip_fastq(gz_path, records)
-        File.write(list_path, "dup\nother\n")
+        File.write(query_file, "dup\nother\n")
 
         SpecCliSupport.run_cli(["index", "--mode", "exact", gz_path]).first.should eq(0)
 
-        status, stdout, stderr = SpecCliSupport.run_cli(["get", "--count", "--list", list_path, gz_path])
+        status, stdout, stderr = SpecCliSupport.run_cli(["get", "--count", "-f", query_file, gz_path])
+        status.should eq(0)
+        stdout.should eq("dup\t2\nother\t1\n")
+        stderr.should be_empty
+
+        status, stdout, stderr = SpecCliSupport.run_cli(["get", "--count", "--file", "-", gz_path], "dup\n\nother\n")
         status.should eq(0)
         stdout.should eq("dup\t2\nother\t1\n")
         stderr.should be_empty
@@ -166,7 +183,7 @@ describe Fqix::CLI do
         stderr.should contain("not unique: dup")
       ensure
         File.delete(index_path) if index_path && File.exists?(index_path)
-        File.delete(list_path) if list_path && File.exists?(list_path)
+        File.delete(query_file) if query_file && File.exists?(query_file)
       end
     end
 

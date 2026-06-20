@@ -38,7 +38,7 @@ module Fqix
       property name_order : OrderMode? = nil # nil = auto-detect
       property? name_order_set = false
       property scan_bytes = Reader::DEFAULT_SCAN_BYTES
-      property list_path : String?
+      property query_file : String?
       property get_order = GetOrder::Input
       property? raw = false
       property? first = false
@@ -49,7 +49,7 @@ module Fqix
       property help_message : String?
     end
 
-    def initialize(@argv : Array(String), @out : IO, @err : IO)
+    def initialize(@argv : Array(String), @out : IO, @err : IO, @in : IO = STDIN)
     end
 
     def run : Int32
@@ -161,7 +161,7 @@ module Fqix
       parser.on("--count", "Print match counts instead of FASTQ records") { opt.count = true }
       parser.on("--all", "Return all matching records [default]") { opt.all = true; opt.first = false }
       parser.on("--unique", "Fail when a requested name has multiple matches") { opt.unique = true }
-      parser.on("--list FILE", "Read query names from FILE") { |v| opt.list_path = v }
+      parser.on("-f", "--file FILE", "Read query names from FILE, or '-' for stdin") { |v| opt.query_file = v }
       parser.on("--order ORDER", "Output order: input or query [input]") { |v| opt.get_order = parse_get_order(v) }
       parser.on("-h", "--help", "Print help") { opt.help = true }
       opt.help_message = parser.to_s
@@ -217,8 +217,8 @@ module Fqix
     private def run_get(args : Array(String), opt : Options) : Int32
       gz = args.shift? || return print_required_args_error(opt)
       names = args
-      if list_path = opt.list_path
-        names = names + File.read_lines(list_path).map(&.strip).reject(&.empty?)
+      if query_file = opt.query_file
+        names = names + read_query_names(query_file)
       end
       return print_required_args_error(opt) if names.empty?
 
@@ -266,6 +266,11 @@ module Fqix
         end
       end
       found_names == names.size ? 0 : 2
+    end
+
+    private def read_query_names(path : String) : Array(String)
+      lines = path == "-" ? @in.gets_to_end.lines : File.read_lines(path)
+      lines.map(&.strip).reject(&.empty?)
     end
 
     private def run_show(args : Array(String), opt : Options) : Int32

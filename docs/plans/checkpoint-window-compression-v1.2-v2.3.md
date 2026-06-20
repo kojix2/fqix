@@ -18,7 +18,7 @@ fqix get reads.fastq.gz read_id
 ```
 
 All current guarantees (arbitrary order in exact, sorted order in sparse,
-duplicates, `--all/--first/--count/--unique/--list`, stale protection, forced
+duplicates, `--all/--first/--count/--unique/--file`, stale protection, forced
 collisions) are preserved. Only the on-disk window section and its checkpoint
 metadata change.
 

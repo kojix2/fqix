@@ -72,10 +72,11 @@ Options:
 - `--count`: print `name<TAB>count` instead of FASTQ records.
 - `--all`: return all matching records (the default).
 - `--unique`: fail when a requested name has multiple matches.
+- `-f, --file FILE`: read additional query names from `FILE`, one name per line.
+  Use `-` to read names from standard input.
+- `--order input|query`: output FASTQ records in original input order or query order.
 
 Duplicate read names are handled the same way in both modes: `--all`, `--count`, and `--unique` see every matching record.
-- `--list FILE`: read additional query names from `FILE`, one name per line.
-- `--order input|query`: output FASTQ records in original input order or query order.
 
 ### `fqix show`
 
