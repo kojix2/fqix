@@ -227,6 +227,8 @@ module Fqix
       raise Error.new("index is stale for #{gz}") if idx.stale_for?(gz)
 
       reader = Reader.new(gz, idx)
+      return run_get_count(names, opt, reader) if opt.count?
+
       found_names = 0
       matches = [] of Tuple(UInt64, String)
       results = reader.fetch_many_matches_with_status(names, opt.scan_bytes)
@@ -245,25 +247,44 @@ module Fqix
             next
           end
           found_names += 1
-          if opt.count?
-            @out.puts "#{name}\t#{records.size}"
-          elsif opt.first?
+          if opt.first?
             matches << records.first
           else
             matches.concat(records)
           end
         end
       end
-      unless opt.count?
-        ordered =
-          case opt.get_order
-          in .query?
-            matches
-          in .input?
-            matches.sort_by(&.[0])
+      ordered =
+        case opt.get_order
+        in .query?
+          matches
+        in .input?
+          matches.sort_by(&.[0])
+        end
+      ordered.each do |_, record|
+        @out << record
+      end
+      found_names == names.size ? 0 : 2
+    end
+
+    private def run_get_count(names : Array(String), opt : Options, reader : Reader) : Int32
+      found_names = 0
+      results = reader.count_many_matches_with_status(names, opt.scan_bytes)
+      names.each_with_index do |name, index|
+        result = results[index]
+        if result.status.scan_limit_reached?
+          @err.puts "fqix: scan limit reached before lookup completed: #{name}"
+          next
+        end
+        if result.count == 0
+          @err.puts "fqix: not found: #{name}"
+        else
+          if opt.unique? && result.count > 1
+            @err.puts "fqix: not unique: #{name}"
+            next
           end
-        ordered.each do |_, record|
-          @out << record
+          found_names += 1
+          @out.puts "#{name}\t#{result.count}"
         end
       end
       found_names == names.size ? 0 : 2

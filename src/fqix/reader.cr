@@ -41,6 +41,20 @@ module Fqix
       end
     end
 
+    record FetchCountResult, status : FetchStatus, count : Int32 do
+      def self.found(count : Int32) : FetchCountResult
+        new(FetchStatus::Found, count)
+      end
+
+      def self.not_found : FetchCountResult
+        new(FetchStatus::NotFound, 0)
+      end
+
+      def self.scan_limit_reached(count : Int32 = 0) : FetchCountResult
+        new(FetchStatus::ScanLimitReached, count)
+      end
+    end
+
     def initialize(@gz_path : String, @index : Index)
     end
 
@@ -82,6 +96,25 @@ module Fqix
         fetch_exact_many_matches_with_status(names)
       in .sparse?
         names.map { |name| fetch_sparse_matches_with_status(name, scan_bytes) }
+      end
+    end
+
+    def count_many_matches_with_status(names : Array(String), scan_bytes : UInt64 = DEFAULT_SCAN_BYTES) : Array(FetchCountResult)
+      case @index.mode
+      in .exact?
+        count_exact_many_matches_with_status(names)
+      in .sparse?
+        names.map do |name|
+          result = fetch_sparse_matches_with_status(name, scan_bytes)
+          case result.status
+          in .found?
+            FetchCountResult.found(result.matches.size)
+          in .not_found?
+            FetchCountResult.not_found
+          in .scan_limit_reached?
+            FetchCountResult.scan_limit_reached(result.matches.size)
+          end
+        end
       end
     end
 
@@ -147,6 +180,30 @@ module Fqix
       end
     end
 
+    private def count_exact_many_matches_with_status(names : Array(String)) : Array(FetchCountResult)
+      if @index.checkpoint_metas.empty?
+        raise Error.new("invalid fqix index checkpoint count") unless names.empty?
+      end
+
+      counts = Array(Int32).new(names.size, 0)
+      candidates_by_checkpoint = Hash(Int32, Array(ExactBatchCandidate)).new do |hash, checkpoint_id|
+        hash[checkpoint_id] = [] of ExactBatchCandidate
+      end
+
+      names.each_with_index do |name, query_index|
+        @index.find_exact_candidates(name).each do |candidate|
+          checkpoint_id = Index.checkpoint_for(@index.checkpoint_metas, candidate.record_offset)
+          candidates_by_checkpoint[checkpoint_id] << ExactBatchCandidate.new(query_index, name, candidate)
+        end
+      end
+
+      candidates_by_checkpoint.each do |checkpoint_id, candidates|
+        count_exact_checkpoint_batch(checkpoint_id, candidates, counts)
+      end
+
+      counts.map { |count| count == 0 ? FetchCountResult.not_found : FetchCountResult.found(count) }
+    end
+
     private def fetch_exact_checkpoint_batch(checkpoint_id : Int32,
                                              candidates : Array(ExactBatchCandidate),
                                              matches_by_query : Array(Array(Tuple(UInt64, String)))) : Nil
@@ -167,16 +224,35 @@ module Fqix
       block = output.to_slice
       candidates.each do |entry|
         candidate = entry.candidate
-        start = (candidate.record_offset - min_offset).to_i
-        size = candidate.record_size.to_i
-        if start < 0 || size < 0 || start + size > block.size
-          raise Error.new("index/input mismatch: truncated FASTQ record at #{candidate.record_offset}")
-        end
-
-        record = block[start, size]
+        record = exact_record_slice(block, min_offset, candidate)
         if verified_exact_record?(entry.query, candidate.record_offset, record)
           matches_by_query[entry.query_index] << {candidate.record_offset, String.new(record)}
         end
+      end
+    end
+
+    private def count_exact_checkpoint_batch(checkpoint_id : Int32,
+                                             candidates : Array(ExactBatchCandidate),
+                                             counts : Array(Int32)) : Nil
+      return if candidates.empty?
+
+      candidates.sort_by!(&.candidate.record_offset)
+      min_offset = candidates.first.candidate.record_offset
+      max_end = candidates.max_of { |entry| entry.candidate.record_offset + entry.candidate.record_size.to_u64 }
+      checkpoint = @index.checkpoint(checkpoint_id)
+      delta = min_offset - @index.checkpoint_metas[checkpoint_id].out_offset
+      output = IO::Memory.new
+
+      Zran.extract_to(@gz_path, checkpoint, delta, max_end - min_offset, ->(chunk : Bytes) {
+        output.write(chunk)
+        true
+      })
+
+      block = output.to_slice
+      candidates.each do |entry|
+        candidate = entry.candidate
+        record = exact_record_slice(block, min_offset, candidate)
+        counts[entry.query_index] += 1 if verified_exact_record?(entry.query, candidate.record_offset, record)
       end
     end
 
@@ -194,6 +270,15 @@ module Fqix
       })
       record = output.to_slice
       verified_exact_record?(query, candidate.record_offset, record) ? String.new(record) : nil
+    end
+
+    private def exact_record_slice(block : Bytes, min_offset : UInt64, candidate : ExactCandidate) : Bytes
+      start = (candidate.record_offset - min_offset).to_i
+      size = candidate.record_size.to_i
+      if start < 0 || size < 0 || start + size > block.size
+        raise Error.new("index/input mismatch: truncated FASTQ record at #{candidate.record_offset}")
+      end
+      block[start, size]
     end
 
     private def verified_exact_record?(query : String, record_offset : UInt64, record : Bytes) : Bool
