@@ -2,6 +2,7 @@ require "./binary_io"
 require "./error"
 require "./order"
 require "./window_store"
+require "compress/deflate"
 
 module Fqix
   module IndexFormat
@@ -15,25 +16,27 @@ module Fqix
     # revision within each kind; bump it when a kind's layout changes.
     SPARSE_MAJOR = 1_u16
     EXACT_MAJOR  = 2_u16
-    SPARSE_MINOR = 1_u16
-    EXACT_MINOR  = 2_u16
+    SPARSE_MINOR = 2_u16
+    EXACT_MINOR  = 3_u16
 
     SPARSE_VERSION = FormatVersion.new(SPARSE_MAJOR, SPARSE_MINOR)
     EXACT_VERSION  = FormatVersion.new(EXACT_MAJOR, EXACT_MINOR)
     VERSION        = EXACT_VERSION
 
-    V1_0_HEADER_SIZE     =  80_u64
-    V1_HEADER_SIZE       =  88_u64
-    V2_1_HEADER_SIZE     = 112_u64
-    V2_2_HEADER_SIZE     = 128_u64
-    V2_HEADER_SIZE       = V2_1_HEADER_SIZE
-    HEADER_SIZE          = V2_1_HEADER_SIZE
-    CHECKPOINT_META_SIZE = 21_u64
-    MIN_NAME_ENTRY_SIZE  = 26_u64
-    ENTRY_SIZE           = 20_u64
-    SLOT_SIZE            = 14_u64
-    OVERFLOW_ENTRY_SIZE  = 13_u64
-    MAX_ARRAY_SIZE       = Int32::MAX.to_u64
+    V1_0_HEADER_SIZE            =  80_u64
+    V1_HEADER_SIZE              =  88_u64
+    V2_1_HEADER_SIZE            = 112_u64
+    V2_2_HEADER_SIZE            = 128_u64
+    V2_HEADER_SIZE              = V2_1_HEADER_SIZE
+    HEADER_SIZE                 = V2_1_HEADER_SIZE
+    LEGACY_CHECKPOINT_META_SIZE = 21_u64
+    CHECKPOINT_META_SIZE        = 25_u64
+    MIN_NAME_ENTRY_SIZE         = 26_u64
+    ENTRY_SIZE                  = 20_u64
+    SLOT_SIZE                   = 14_u64
+    OVERFLOW_ENTRY_SIZE         = 13_u64
+    MAX_ARRAY_SIZE              = Int32::MAX.to_u64
+    MAX_COMPRESSED_WINDOW_SIZE  = Zran::WINDOW_SIZE.to_u64 + 64_u64
 
     def write(index : Index, path : String) : Nil
       case index.mode
@@ -73,7 +76,7 @@ module Fqix
           case version.minor
           when 1
             read_v2_1_after_version(io, path, version)
-          when 2
+          when 2, 3
             read_v2_2_after_version(io, path, version)
           else
             raise Error.new("unsupported fqix format #{version}; please rebuild the index")
@@ -104,6 +107,7 @@ module Fqix
           raise Error.new("source path too long for index: #{index.source_path}")
         end
 
+        compressed_windows = compress_checkpoint_windows(index)
         windows_offset = V1_HEADER_SIZE +
                          source_path_bytes.size.to_u64 +
                          index.checkpoint_metas.size.to_u64 * CHECKPOINT_META_SIZE +
@@ -126,8 +130,8 @@ module Fqix
         io.write(Bytes.new(7))
         io.write(source_path_bytes)
 
-        index.checkpoint_metas.each do |checkpoint|
-          write_checkpoint_meta(io, checkpoint)
+        index.checkpoint_metas.each_with_index do |checkpoint, checkpoint_id|
+          write_checkpoint_meta(io, checkpoint, compressed_windows[checkpoint_id].size.to_u32)
         end
 
         index.names.each do |entry|
@@ -138,8 +142,8 @@ module Fqix
           raise Error.new("internal index layout error: window offset mismatch")
         end
 
-        index.checkpoint_metas.each_index do |checkpoint_id|
-          io.write(index.checkpoint_window(checkpoint_id))
+        compressed_windows.each do |window|
+          io.write(window)
         end
       end
     end
@@ -151,6 +155,7 @@ module Fqix
           raise Error.new("source path too long for index: #{index.source_path}")
         end
 
+        compressed_windows = compress_checkpoint_windows(index)
         mphf = index.mphf || Mphf.empty(index.fingerprint_seed)
         mphf_blob = mphf.to_slice
         mphf_offset = V2_2_HEADER_SIZE + source_path_bytes.size.to_u64
@@ -206,16 +211,16 @@ module Fqix
           write_overflow_entry(io, entry)
         end
 
-        index.checkpoint_metas.each do |checkpoint|
-          write_checkpoint_meta(io, checkpoint)
+        index.checkpoint_metas.each_with_index do |checkpoint, checkpoint_id|
+          write_checkpoint_meta(io, checkpoint, compressed_windows[checkpoint_id].size.to_u32)
         end
 
         unless io.pos.to_u64 == windows_offset
           raise Error.new("internal index layout error: window offset mismatch")
         end
 
-        index.checkpoint_metas.each_index do |checkpoint_id|
-          io.write(index.checkpoint_window(checkpoint_id))
+        compressed_windows.each do |window|
+          io.write(window)
         end
       end
     end
@@ -251,10 +256,15 @@ module Fqix
       source_path = String.new(path_buf)
 
       bytes_to_windows = windows_offset - io.pos.to_u64
-      ensure_table_fits!("checkpoint", ncheckpoints, bytes_to_windows, CHECKPOINT_META_SIZE)
+      checkpoint_meta_size = checkpoint_meta_size(version)
+      compressed_windows = compressed_windows?(version)
+      ensure_table_fits!("checkpoint", ncheckpoints, bytes_to_windows, checkpoint_meta_size)
       checkpoint_metas = Array(CheckpointMeta).new(ncheckpoints.to_i)
+      window_compressed_sizes = Array(UInt32).new(ncheckpoints.to_i)
       ncheckpoints.times do
-        checkpoint_metas << read_checkpoint_meta(io)
+        meta, window_compressed_size = read_checkpoint_meta(io, compressed_windows)
+        checkpoint_metas << meta
+        window_compressed_sizes << window_compressed_size
       end
 
       bytes_to_windows = windows_offset - io.pos.to_u64
@@ -268,7 +278,7 @@ module Fqix
       if io.pos.to_u64 != windows_offset
         raise Error.new("invalid fqix index window offset")
       end
-      ensure_windows_fit!(ncheckpoints, windows_offset, file_size)
+      window_store = build_window_store(path, windows_offset, file_size, checkpoint_metas, window_compressed_sizes, compressed_windows)
 
       Index.new(
         source_path,
@@ -286,7 +296,7 @@ module Fqix
         checkpoint_metas,
         names,
         [] of Entry,
-        FileWindowStore.new(path, windows_offset),
+        window_store,
         version
       )
     end
@@ -351,12 +361,12 @@ module Fqix
       end
       validate_exact_entries!(entries)
 
-      checkpoint_metas = read_checkpoint_metas(io, ncheckpoints, windows_offset)
+      checkpoint_metas, window_compressed_sizes = read_checkpoint_metas(io, ncheckpoints, windows_offset, version)
 
       if io.pos.to_u64 != windows_offset
         raise Error.new("invalid fqix index window offset")
       end
-      ensure_windows_fit!(ncheckpoints, windows_offset, file_size)
+      window_store = build_window_store(path, windows_offset, file_size, checkpoint_metas, window_compressed_sizes, compressed_windows?(version))
 
       Index.new(
         source_path,
@@ -374,7 +384,7 @@ module Fqix
         checkpoint_metas,
         [] of NameEntry,
         entries,
-        FileWindowStore.new(path, windows_offset),
+        window_store,
         version,
         nil,
         [] of ExactSlot,
@@ -443,12 +453,12 @@ module Fqix
       end
       validate_exact_slots!(slots, overflows)
 
-      checkpoint_metas = read_checkpoint_metas(io, ncheckpoints, windows_offset)
+      checkpoint_metas, window_compressed_sizes = read_checkpoint_metas(io, ncheckpoints, windows_offset, version)
 
       if io.pos.to_u64 != windows_offset
         raise Error.new("invalid fqix index window offset")
       end
-      ensure_windows_fit!(ncheckpoints, windows_offset, file_size)
+      window_store = build_window_store(path, windows_offset, file_size, checkpoint_metas, window_compressed_sizes, compressed_windows?(version))
 
       Index.new(
         source_path,
@@ -466,7 +476,7 @@ module Fqix
         checkpoint_metas,
         [] of NameEntry,
         [] of Entry,
-        FileWindowStore.new(path, windows_offset),
+        window_store,
         version,
         mphf,
         slots,
@@ -507,13 +517,17 @@ module Fqix
       end
     end
 
-    private def read_checkpoint_metas(io : IO, ncheckpoints : UInt64, windows_offset : UInt64) : Array(CheckpointMeta)
-      ensure_table_fits!("checkpoint", ncheckpoints, windows_offset - io.pos.to_u64, CHECKPOINT_META_SIZE)
+    private def read_checkpoint_metas(io : IO, ncheckpoints : UInt64, windows_offset : UInt64, version : FormatVersion) : Tuple(Array(CheckpointMeta), Array(UInt32))
+      compressed_windows = compressed_windows?(version)
+      ensure_table_fits!("checkpoint", ncheckpoints, windows_offset - io.pos.to_u64, checkpoint_meta_size(version))
       checkpoint_metas = Array(CheckpointMeta).new(ncheckpoints.to_i)
+      window_compressed_sizes = Array(UInt32).new(ncheckpoints.to_i)
       ncheckpoints.times do
-        checkpoint_metas << read_checkpoint_meta(io)
+        meta, window_compressed_size = read_checkpoint_meta(io, compressed_windows)
+        checkpoint_metas << meta
+        window_compressed_sizes << window_compressed_size
       end
-      checkpoint_metas
+      {checkpoint_metas, window_compressed_sizes}
     end
 
     private def name_table_size(names : Array(NameEntry)) : UInt64
@@ -539,11 +553,59 @@ module Fqix
       end
     end
 
-    private def ensure_windows_fit!(ncheckpoints : UInt64, windows_offset : UInt64, file_size : UInt64) : Nil
+    private def ensure_raw_windows_fit!(ncheckpoints : UInt64, windows_offset : UInt64, file_size : UInt64) : Nil
       bytes_available = file_size - windows_offset
       window_size = Zran::WINDOW_SIZE.to_u64
       if ncheckpoints > MAX_ARRAY_SIZE || ncheckpoints > bytes_available // window_size
         raise Error.new("invalid fqix index window section")
+      end
+    end
+
+    private def build_window_store(path : String,
+                                   windows_offset : UInt64,
+                                   file_size : UInt64,
+                                   checkpoint_metas : Array(CheckpointMeta),
+                                   window_compressed_sizes : Array(UInt32),
+                                   compressed_windows : Bool) : WindowStore
+      unless compressed_windows
+        ensure_raw_windows_fit!(checkpoint_metas.size.to_u64, windows_offset, file_size)
+        return FileWindowStore.new(path, windows_offset)
+      end
+
+      descriptors = build_compressed_window_descriptors(checkpoint_metas, window_compressed_sizes, file_size - windows_offset)
+      CompressedFileWindowStore.new(path, windows_offset, descriptors)
+    end
+
+    private def build_compressed_window_descriptors(checkpoint_metas : Array(CheckpointMeta),
+                                                    window_compressed_sizes : Array(UInt32),
+                                                    bytes_available : UInt64) : Array(CompressedWindowDescriptor)
+      if checkpoint_metas.size > MAX_ARRAY_SIZE || checkpoint_metas.size != window_compressed_sizes.size
+        raise Error.new("invalid fqix index window section")
+      end
+
+      rel_offset = 0_u64
+      descriptors = Array(CompressedWindowDescriptor).new(checkpoint_metas.size)
+      checkpoint_metas.each_with_index do |meta, index|
+        compressed_size = window_compressed_sizes[index]
+        validate_window_compressed_size!(meta.have, compressed_size)
+        if rel_offset > bytes_available || compressed_size.to_u64 > bytes_available - rel_offset
+          raise Error.new("invalid fqix index window section")
+        end
+        descriptors << CompressedWindowDescriptor.new(rel_offset, compressed_size, meta.have)
+        rel_offset += compressed_size.to_u64
+      end
+
+      unless rel_offset == bytes_available
+        raise Error.new("invalid fqix index window section")
+      end
+      descriptors
+    end
+
+    private def validate_window_compressed_size!(have : UInt32, compressed_size : UInt32) : Nil
+      if have == 0
+        raise Error.new("invalid fqix compressed checkpoint window length") unless compressed_size == 0
+      elsif compressed_size == 0 || compressed_size.to_u64 > MAX_COMPRESSED_WINDOW_SIZE
+        raise Error.new("invalid fqix compressed checkpoint window length")
       end
     end
 
@@ -606,21 +668,51 @@ module Fqix
       raise Error.new("unsupported fqix order mode #{value}")
     end
 
-    private def write_checkpoint_meta(io : IO, checkpoint : CheckpointMeta) : Nil
+    private def write_checkpoint_meta(io : IO, checkpoint : CheckpointMeta, window_compressed_size : UInt32) : Nil
       BinaryIO.write_u64(io, checkpoint.out_offset)
       BinaryIO.write_u64(io, checkpoint.in_offset)
       BinaryIO.write_u8(io, checkpoint.bits)
       BinaryIO.write_u32(io, checkpoint.have)
+      BinaryIO.write_u32(io, window_compressed_size)
     end
 
-    private def read_checkpoint_meta(io : IO) : CheckpointMeta
+    private def read_checkpoint_meta(io : IO, compressed_window : Bool) : Tuple(CheckpointMeta, UInt32)
       out_offset = BinaryIO.read_u64(io)
       in_offset = BinaryIO.read_u64(io)
       bits = BinaryIO.read_u8(io)
       have = BinaryIO.read_u32(io)
       raise Error.new("invalid fqix checkpoint bits") if bits > 7
       raise Error.new("invalid fqix checkpoint dictionary size") if have > Zran::WINDOW_SIZE
-      CheckpointMeta.new(out_offset, in_offset, bits, have)
+      window_compressed_size = compressed_window ? BinaryIO.read_u32(io) : Zran::WINDOW_SIZE.to_u32
+      {CheckpointMeta.new(out_offset, in_offset, bits, have), window_compressed_size}
+    end
+
+    private def checkpoint_meta_size(version : FormatVersion) : UInt64
+      compressed_windows?(version) ? CHECKPOINT_META_SIZE : LEGACY_CHECKPOINT_META_SIZE
+    end
+
+    private def compressed_windows?(version : FormatVersion) : Bool
+      (version.major == SPARSE_MAJOR && version.minor >= 2) ||
+        (version.major == EXACT_MAJOR && version.minor >= 3)
+    end
+
+    private def compress_checkpoint_windows(index : Index) : Array(Bytes)
+      index.checkpoint_metas.map_with_index do |checkpoint, checkpoint_id|
+        have = checkpoint.have
+        if have == 0
+          Bytes.empty
+        else
+          window = index.checkpoint_window(checkpoint_id)
+          if window.size < have
+            raise Error.new("internal index window shorter than checkpoint dictionary")
+          end
+          output = IO::Memory.new
+          Compress::Deflate::Writer.open(output, level: Compress::Deflate::BEST_COMPRESSION) do |deflater|
+            deflater.write(window[0, have])
+          end
+          output.to_slice
+        end
+      end
     end
 
     private def write_name_entry(io : IO, entry : NameEntry) : Nil

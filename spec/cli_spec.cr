@@ -280,7 +280,7 @@ describe Fqix::CLI do
 
         status, stdout, stderr = SpecCliSupport.run_cli(["show", index_path])
         status.should eq(0)
-        stdout.should contain("version\t1.1")
+        stdout.should contain("version\t1.2")
         stdout.should contain("order_mode\tnatural")
         stderr.should be_empty
 

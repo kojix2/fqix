@@ -83,7 +83,7 @@ module SpecIndexSupport
                                              bits : UInt8 = 0_u8,
                                              have : UInt32 = 0_u32,
                                              window_bytes : Int32 = Fqix::Zran::WINDOW_SIZE)
-    windows_offset = Fqix::IndexFormat::V2_HEADER_SIZE + Fqix::IndexFormat::CHECKPOINT_META_SIZE
+    windows_offset = Fqix::IndexFormat::V2_HEADER_SIZE + Fqix::IndexFormat::LEGACY_CHECKPOINT_META_SIZE
     File.open(path, "wb") do |io|
       io.write(Fqix::IndexFormat::MAGIC.to_slice)
       Fqix::IndexFormat.write_version(io, Fqix::FormatVersion.new(Fqix::IndexFormat::EXACT_MAJOR, 1_u16))
@@ -167,7 +167,7 @@ module SpecIndexSupport
       name_table_size = names.sum(0_u64) { |entry| 2_u64 + entry.name.bytesize.to_u64 + 24_u64 }
       windows_offset = Fqix::IndexFormat::V1_0_HEADER_SIZE +
                        source_path_bytes.size.to_u64 +
-                       checkpoint_metas.size.to_u64 * Fqix::IndexFormat::CHECKPOINT_META_SIZE +
+                       checkpoint_metas.size.to_u64 * Fqix::IndexFormat::LEGACY_CHECKPOINT_META_SIZE +
                        name_table_size
 
       io.write(Fqix::IndexFormat::MAGIC_V1.to_slice)
@@ -327,9 +327,9 @@ describe Fqix::Index do
       index_path = File.tempname("fqix-v2-future-reject-spec", ".fqix")
 
       begin
-        SpecIndexSupport.write_index_with_version(index_path, 2_u16, 3_u16)
+        SpecIndexSupport.write_index_with_version(index_path, 2_u16, 4_u16)
 
-        expect_raises(Fqix::Error, "unsupported fqix format 2.3; please rebuild the index") do
+        expect_raises(Fqix::Error, "unsupported fqix format 2.4; please rebuild the index") do
           Fqix::Index.read(index_path)
         end
       ensure
@@ -630,7 +630,7 @@ describe Fqix::Index do
 
         index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Sparse, order_mode: Fqix::OrderMode::Natural)
         index.order_mode.should eq(Fqix::OrderMode::Natural)
-        index.format_version.should eq(Fqix::FormatVersion.new(1_u16, 1_u16))
+        index.format_version.should eq(Fqix::FormatVersion.new(1_u16, 2_u16))
         index.write(index_path)
 
         read_index = Fqix::Index.read(index_path)
@@ -719,7 +719,7 @@ describe Fqix::Index do
       end
     end
 
-    it "writes v2.2 exact mphf slots" do
+    it "writes v2.3 exact mphf slots with compressed windows" do
       gz_path = File.tempname("fqix-compact-exact-spec", ".fastq.gz")
       index_path = "#{gz_path}.fqix"
       records = [
@@ -732,21 +732,22 @@ describe Fqix::Index do
         index.write(index_path)
 
         read_index = Fqix::Index.read(index_path)
-        read_index.format_version.should eq(Fqix::FormatVersion.new(2_u16, 2_u16))
+        read_index.format_version.should eq(Fqix::FormatVersion.new(2_u16, 3_u16))
         read_index.slots.size.should eq(1)
         read_index.overflows.size.should eq(0)
         read_index.find_exact_candidates("read1").size.should eq(1)
         read_index.find_exact_candidates("read1").first.record_offset.should eq(0_u64)
         read_index.find_exact_candidates("read1").first.record_size.should eq(records[0][1].bytesize.to_u32)
 
-        mphf = read_index.mphf || raise "expected v2.2 mphf"
-        expected_size = Fqix::IndexFormat::V2_2_HEADER_SIZE +
-                        gz_path.to_slice.size.to_u64 +
-                        mphf.to_slice.size.to_u64 +
-                        Fqix::IndexFormat::SLOT_SIZE +
-                        read_index.checkpoint_metas.size.to_u64 * Fqix::IndexFormat::CHECKPOINT_META_SIZE +
-                        read_index.checkpoint_metas.size.to_u64 * Fqix::Zran::WINDOW_SIZE.to_u64
-        File.size(index_path).to_u64.should eq(expected_size)
+        mphf = read_index.mphf || raise "expected v2.3 mphf"
+        raw_window_size = read_index.checkpoint_metas.size.to_u64 * Fqix::Zran::WINDOW_SIZE.to_u64
+        uncompressed_size = Fqix::IndexFormat::V2_2_HEADER_SIZE +
+                            gz_path.to_slice.size.to_u64 +
+                            mphf.to_slice.size.to_u64 +
+                            Fqix::IndexFormat::SLOT_SIZE +
+                            read_index.checkpoint_metas.size.to_u64 * Fqix::IndexFormat::CHECKPOINT_META_SIZE +
+                            raw_window_size
+        File.size(index_path).to_u64.should be < uncompressed_size
         Fqix::Reader.new(gz_path, read_index).fetch("read1").should eq(records[0][1])
       ensure
         File.delete(gz_path) if File.exists?(gz_path)
@@ -1131,7 +1132,8 @@ describe Fqix::Index do
         read_index.checkpoint_metas.should eq(built.checkpoint_metas)
 
         built.checkpoint_metas.each_index do |index|
-          read_index.checkpoint(index).window.should eq(built.checkpoint(index).window)
+          have = built.checkpoint_metas[index].have
+          read_index.checkpoint(index).window.should eq(built.checkpoint(index).window[0, have])
         end
       ensure
         File.delete(gz_path) if File.exists?(gz_path)
