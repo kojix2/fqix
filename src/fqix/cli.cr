@@ -173,9 +173,9 @@ module Fqix
       parser.summary_width = 14
       parser.banner = command_banner(
         "Show index metadata",
-        "fqix show [OPTIONS] <index.fqix>",
+        "fqix show [OPTIONS] <fastq.gz|index.fqix>",
         [
-          {"index.fqix", "Input FQIX index file"},
+          {"fastq.gz|index.fqix", "Input FASTQ.gz file or FQIX index file"},
         ]
       )
       parser.on("--entries", "Print raw mode-specific lookup entries") { opt.raw = true }
@@ -277,9 +277,13 @@ module Fqix
       path = args.shift? || return print_required_args_error(opt)
       raise Error.new("too many arguments") unless args.empty?
 
-      idx = Index.read(path)
+      idx = Index.read(show_index_path(path))
       opt.raw? ? show_raw_entries(idx) : show_metadata(idx)
       0
+    end
+
+    private def show_index_path(path : String) : String
+      path.ends_with?(".fqix") ? path : Index.default_path(path)
     end
 
     private def show_raw_entries(idx : Index) : Nil

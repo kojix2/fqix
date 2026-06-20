@@ -81,12 +81,12 @@ Duplicate read names are handled the same way in both modes: `--all`, `--count`,
 ### `fqix show`
 
 ```sh
-fqix show reads.fastq.gz.fqix
-fqix show --anchors reads.fastq.gz.fqix
-fqix show --entries reads.fastq.gz.fqix
+fqix show reads.fastq.gz
+fqix show --anchors reads.fastq.gz
+fqix show --entries reads.fastq.gz
 ```
 
-Without `--entries` or `--anchors`, this prints index metadata. With either raw option, it prints the mode-specific lookup table: sparse anchors for sparse indexes, exact slots for exact indexes.
+Without `--entries` or `--anchors`, this prints index metadata. With either raw option, it prints the mode-specific lookup table: sparse anchors for sparse indexes, exact slots for exact indexes. Pass either the source `reads.fastq.gz` path or the explicit `reads.fastq.gz.fqix` index path.
 
 ### `fqix check`
 

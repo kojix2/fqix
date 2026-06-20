@@ -63,6 +63,15 @@ describe Fqix::CLI do
       stderr.should be_empty
     end
 
+    it "prints show help with FASTQ or index input" do
+      status, stdout, stderr = SpecCliSupport.run_cli(["show", "--help"])
+
+      status.should eq(0)
+      stdout.should contain("Usage: fqix show")
+      stdout.should contain("<fastq.gz|index.fqix>")
+      stderr.should be_empty
+    end
+
     it "prints subcommand help to stderr and fails when required arguments are missing" do
       status, stdout, stderr = SpecCliSupport.run_cli(["index"])
 
@@ -295,10 +304,15 @@ describe Fqix::CLI do
         stdout.should be_empty
         stderr.should contain("wrote #{index_path}")
 
-        status, stdout, stderr = SpecCliSupport.run_cli(["show", index_path])
+        status, stdout, stderr = SpecCliSupport.run_cli(["show", gz_path])
         status.should eq(0)
         stdout.should contain("version\t1.2")
         stdout.should contain("order_mode\tnatural")
+        stderr.should be_empty
+
+        status, stdout, stderr = SpecCliSupport.run_cli(["show", index_path])
+        status.should eq(0)
+        stdout.should contain("version\t1.2")
         stderr.should be_empty
 
         status, stdout, stderr = SpecCliSupport.run_cli(["get", gz_path, "DRR000001.1077"])
@@ -368,7 +382,17 @@ describe Fqix::CLI do
       stderr.should_not contain("Unhandled exception")
     end
 
-    it "reports a missing index for show without a stack trace" do
+    it "reports a missing default index for show without a stack trace" do
+      status, stdout, stderr = SpecCliSupport.run_cli(["show", "reads.fastq.gz"])
+
+      status.should eq(1)
+      stdout.should be_empty
+      stderr.should start_with("fqix: ")
+      stderr.should contain("reads.fastq.gz.fqix")
+      stderr.should_not contain("Unhandled exception")
+    end
+
+    it "reports a missing explicit index for show without a stack trace" do
       status, stdout, stderr = SpecCliSupport.run_cli(["show", "missing.fqix"])
 
       status.should eq(1)
