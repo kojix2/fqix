@@ -229,8 +229,9 @@ module Fqix
       reader = Reader.new(gz, idx)
       found_names = 0
       matches = [] of Tuple(UInt64, String)
-      names.each do |name|
-        result = reader.fetch_matches_with_status(name, opt.scan_bytes)
+      results = reader.fetch_many_matches_with_status(names, opt.scan_bytes)
+      names.each_with_index do |name, index|
+        result = results[index]
         records = result.matches
         if result.status.scan_limit_reached?
           @err.puts "fqix: scan limit reached before lookup completed: #{name}"
