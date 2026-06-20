@@ -154,24 +154,9 @@ module Fqix
       candidate : ExactCandidate
 
     private def fetch_exact_many_matches_with_status(names : Array(String)) : Array(FetchMatchesResult)
-      if @index.checkpoint_metas.empty?
-        raise Error.new("invalid fqix index checkpoint count") unless names.empty?
-      end
-
       matches_by_query = Array(Array(Tuple(UInt64, String))).new(names.size) { [] of Tuple(UInt64, String) }
-      candidates_by_checkpoint = Hash(Int32, Array(ExactBatchCandidate)).new do |hash, checkpoint_id|
-        hash[checkpoint_id] = [] of ExactBatchCandidate
-      end
-
-      names.each_with_index do |name, query_index|
-        @index.find_exact_candidates(name).each do |candidate|
-          checkpoint_id = Index.checkpoint_for(@index.checkpoint_metas, candidate.record_offset)
-          candidates_by_checkpoint[checkpoint_id] << ExactBatchCandidate.new(query_index, name, candidate)
-        end
-      end
-
-      candidates_by_checkpoint.each do |checkpoint_id, candidates|
-        fetch_exact_checkpoint_batch(checkpoint_id, candidates, matches_by_query)
+      each_verified_exact_record(names) do |entry, record|
+        matches_by_query[entry.query_index] << {entry.candidate.record_offset, String.new(record)}
       end
 
       matches_by_query.map do |matches|
@@ -181,11 +166,19 @@ module Fqix
     end
 
     private def count_exact_many_matches_with_status(names : Array(String)) : Array(FetchCountResult)
+      counts = Array(Int32).new(names.size, 0)
+      each_verified_exact_record(names) do |entry, _record|
+        counts[entry.query_index] += 1
+      end
+
+      counts.map { |count| count == 0 ? FetchCountResult.not_found : FetchCountResult.found(count) }
+    end
+
+    private def each_verified_exact_record(names : Array(String), & : ExactBatchCandidate, Bytes ->) : Nil
       if @index.checkpoint_metas.empty?
         raise Error.new("invalid fqix index checkpoint count") unless names.empty?
       end
 
-      counts = Array(Int32).new(names.size, 0)
       candidates_by_checkpoint = Hash(Int32, Array(ExactBatchCandidate)).new do |hash, checkpoint_id|
         hash[checkpoint_id] = [] of ExactBatchCandidate
       end
@@ -198,42 +191,15 @@ module Fqix
       end
 
       candidates_by_checkpoint.each do |checkpoint_id, candidates|
-        count_exact_checkpoint_batch(checkpoint_id, candidates, counts)
-      end
-
-      counts.map { |count| count == 0 ? FetchCountResult.not_found : FetchCountResult.found(count) }
-    end
-
-    private def fetch_exact_checkpoint_batch(checkpoint_id : Int32,
-                                             candidates : Array(ExactBatchCandidate),
-                                             matches_by_query : Array(Array(Tuple(UInt64, String)))) : Nil
-      return if candidates.empty?
-
-      candidates.sort_by!(&.candidate.record_offset)
-      min_offset = candidates.first.candidate.record_offset
-      max_end = candidates.max_of { |entry| entry.candidate.record_offset + entry.candidate.record_size.to_u64 }
-      checkpoint = @index.checkpoint(checkpoint_id)
-      delta = min_offset - @index.checkpoint_metas[checkpoint_id].out_offset
-      output = IO::Memory.new
-
-      Zran.extract_to(@gz_path, checkpoint, delta, max_end - min_offset, ->(chunk : Bytes) {
-        output.write(chunk)
-        true
-      })
-
-      block = output.to_slice
-      candidates.each do |entry|
-        candidate = entry.candidate
-        record = exact_record_slice(block, min_offset, candidate)
-        if verified_exact_record?(entry.query, candidate.record_offset, record)
-          matches_by_query[entry.query_index] << {candidate.record_offset, String.new(record)}
+        each_verified_exact_checkpoint_record(checkpoint_id, candidates) do |entry, record|
+          yield entry, record
         end
       end
     end
 
-    private def count_exact_checkpoint_batch(checkpoint_id : Int32,
-                                             candidates : Array(ExactBatchCandidate),
-                                             counts : Array(Int32)) : Nil
+    private def each_verified_exact_checkpoint_record(checkpoint_id : Int32,
+                                                      candidates : Array(ExactBatchCandidate),
+                                                      & : ExactBatchCandidate, Bytes ->) : Nil
       return if candidates.empty?
 
       candidates.sort_by!(&.candidate.record_offset)
@@ -252,7 +218,7 @@ module Fqix
       candidates.each do |entry|
         candidate = entry.candidate
         record = exact_record_slice(block, min_offset, candidate)
-        counts[entry.query_index] += 1 if verified_exact_record?(entry.query, candidate.record_offset, record)
+        yield entry, record if verified_exact_record?(entry.query, candidate.record_offset, record)
       end
     end
 
