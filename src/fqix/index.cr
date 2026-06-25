@@ -208,6 +208,13 @@ module Fqix
   # the zran checkpoint pass.
   class SparseNameTableBuilder
     record Anchor, name : String, offset : UInt64
+    record OrderViolation,
+      previous_name : String,
+      previous_record_index : UInt64,
+      previous_offset : UInt64,
+      current_name : String,
+      current_record_index : UInt64,
+      current_offset : UInt64
 
     # Candidate read-name orders tried during build, in auto-detection
     # precedence (the first monotonic one wins when the order is `auto`).
@@ -219,9 +226,12 @@ module Fqix
     def initialize(@name_interval : UInt32)
       @anchors = [] of Anchor
       @record_index = 0_u64
-      @last_name = nil.as(String?)
+      @seen_any = false
+      @last_name = ""
+      @last_record_index = 0_u64
+      @last_offset = 0_u64
       @monotonic = Hash(OrderMode, Bool).new
-      @first_violation = Hash(OrderMode, Tuple(String, String)).new
+      @first_violation = Hash(OrderMode, OrderViolation).new
       ORDER_CANDIDATES.each { |mode| @monotonic[mode] = true }
       @header = IO::Memory.new
       @framer = Fastq::StreamParser.new(
@@ -249,22 +259,32 @@ module Fqix
       @monotonic.fetch(mode, false)
     end
 
-    # The first {previous, current} inversion observed under `mode`, if any.
-    def first_violation(mode : OrderMode) : Tuple(String, String)?
+    # The first adjacent read-name inversion observed under `mode`, if any.
+    def first_violation(mode : OrderMode) : OrderViolation?
       @first_violation[mode]?
     end
 
     private def complete_record(name : String, record_start : UInt64) : Nil
-      if last = @last_name
+      if @seen_any
         ORDER_CANDIDATES.each do |mode|
           next unless @monotonic[mode]
-          if Order.compare(name, last, mode) < 0
+          if Order.compare(name, @last_name, mode) < 0
             @monotonic[mode] = false
-            @first_violation[mode] = {last, name}
+            @first_violation[mode] = OrderViolation.new(
+              @last_name,
+              @last_record_index,
+              @last_offset,
+              name,
+              @record_index,
+              record_start
+            )
           end
         end
       end
+      @seen_any = true
       @last_name = name
+      @last_record_index = @record_index
+      @last_offset = record_start
 
       if @record_index == 0 || @record_index % @name_interval == 0
         @anchors << Anchor.new(name, record_start)
@@ -477,7 +497,7 @@ module Fqix
       return chosen if chosen
 
       tried = SparseNameTableBuilder::ORDER_CANDIDATES.map { |mode| order_mode_label(mode) }.join(", ")
-      raise Error.new("FASTQ is not sorted under any built-in --name-order (tried #{tried}); sort the file or use --mode exact")
+      raise Error.new("FASTQ is not sorted under any built-in --name-order (tried #{tried}); sort the file or use --mode exact\n#{sparse_order_failure_details(builder)}")
     end
 
     private def self.sparse_order_failure_message(builder : SparseNameTableBuilder, requested : OrderMode) : String
@@ -493,10 +513,26 @@ module Fqix
         end
 
       if violation = builder.first_violation(requested)
-        prev, cur = violation
-        "FASTQ is not sorted under --name-order #{order_mode_label(requested)} near #{cur.inspect} < #{prev.inspect}; #{suffix}"
+        "FASTQ is not sorted under --name-order #{order_mode_label(requested)}; #{suffix}\n#{format_sparse_order_violation(requested, violation)}"
       else
         "FASTQ is not sorted under --name-order #{order_mode_label(requested)}; #{suffix}"
+      end
+    end
+
+    private def self.sparse_order_failure_details(builder : SparseNameTableBuilder) : String
+      SparseNameTableBuilder::ORDER_CANDIDATES.compact_map do |mode|
+        if violation = builder.first_violation(mode)
+          format_sparse_order_violation(mode, violation)
+        end
+      end.join('\n')
+    end
+
+    private def self.format_sparse_order_violation(mode : OrderMode, violation : SparseNameTableBuilder::OrderViolation) : String
+      String.build do |io|
+        io << "  first --name-order " << order_mode_label(mode) << " violation:\n"
+        io << "    previous record #" << violation.previous_record_index << " at uncompressed offset " << violation.previous_offset << ": " << violation.previous_name.inspect << '\n'
+        io << "    current  record #" << violation.current_record_index << " at uncompressed offset " << violation.current_offset << ": " << violation.current_name.inspect << '\n'
+        io << "    comparison: current sorts before previous"
       end
     end
 

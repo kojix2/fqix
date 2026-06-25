@@ -297,6 +297,11 @@ describe Fqix::CLI do
         stdout.should be_empty
         stderr.should contain("not sorted under --name-order lex")
         stderr.should contain("try --name-order natural")
+        stderr.should contain("first --name-order lex violation")
+        stderr.should contain(%(previous record #2))
+        stderr.should contain(%(current  record #3))
+        stderr.should contain(%("DRR000001.904"))
+        stderr.should contain(%("DRR000001.1077"))
 
         # The default (auto) detects natural and succeeds with no flag.
         status, stdout, stderr = SpecCliSupport.run_cli(["index", gz_path])

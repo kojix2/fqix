@@ -620,9 +620,14 @@ describe Fqix::Index do
 
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
-        expect_raises(Fqix::Error, /--name-order lex/) do
+        ex = expect_raises(Fqix::Error, /--name-order lex/) do
           Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Sparse, order_mode: Fqix::OrderMode::Lexicographic)
         end
+        message = ex.message || ""
+        message.should contain("first --name-order lex violation")
+        message.should contain(%(previous record #2 at uncompressed offset #{records[0][1].bytesize + records[1][1].bytesize}: "DRR000001.904"))
+        message.should contain(%(current  record #3 at uncompressed offset #{records[0][1].bytesize + records[1][1].bytesize + records[2][1].bytesize}: "DRR000001.1077"))
+        message.should contain("comparison: current sorts before previous")
 
         # Auto (the default) detects natural for this width-varying numeric data.
         auto_index = Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Sparse)
@@ -651,9 +656,14 @@ describe Fqix::Index do
 
       begin
         SpecIndexSupport.write_gzip_member(gz_path, records)
-        expect_raises(Fqix::Error, /use --mode exact/) do
+        ex = expect_raises(Fqix::Error, /use --mode exact/) do
           Fqix::Index.build(gz_path, checkpoint_span: Fqix::Zran::WINDOW_SIZE.to_u64, mode: Fqix::IndexMode::Sparse)
         end
+        message = ex.message || ""
+        message.should contain("first --name-order lex violation")
+        message.should contain("first --name-order natural violation")
+        message.should contain(%(previous record #0 at uncompressed offset 0: "read_C"))
+        message.should contain(%(current  record #1 at uncompressed offset #{records[0][1].bytesize}: "read_A"))
       ensure
         File.delete(gz_path) if File.exists?(gz_path)
       end
